@@ -25,9 +25,13 @@ def test_target_metadata_is_wired_to_app_models():
     # Phase 1 adds the auth/entity tables (users, refresh_tokens, and the
     # seven reference tables) — see ARCHITECTURE.md §4.1, §4.2. Phase 2
     # adds the batch ledger and its append-only event log — §4.3, §4.4, §4.9.
+    # Phase 3 adds alerts/patient_reports — §4.7, §4.9. Phase 4 adds
+    # returns/notifications — §4.5, §4.8.
     expected = {
         "users", "refresh_tokens", "pharmacies", "distributors",
         "manufacturers", "facilities", "regulators", "agents", "vehicles", "drugs",
         "batches", "events", "sales",
+        "alerts", "patient_reports",
+        "returns", "notifications",
     }
     assert expected.issubset(set(Base.metadata.tables))

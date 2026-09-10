@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     public_verify_rate_limit: str = "30/minute"
     public_report_rate_limit: str = "5/minute"
 
+    # --- Phase 9: baseline rate limit applied to every route, public and
+    # authenticated alike (see app/core/rate_limit.py's module docstring
+    # for why the default is deliberately generous). ---
+    default_rate_limit: str = "1000/minute"
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]

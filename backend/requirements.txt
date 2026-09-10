@@ -14,3 +14,12 @@ argon2-cffi==25.1.0
 python-jose[cryptography]==3.5.0
 cryptography==50.0.1
 email-validator==2.3.0
+
+# --- Phase 3: fraud engine, alerts, public rate limiting ---
+slowapi==0.1.9
+
+# --- Phase 7: real-time (Redis pub/sub + WebSockets) ---
+redis==5.2.1
+
+# --- Phase 9: real photo upload (multipart form parsing) ---
+python-multipart==0.0.17

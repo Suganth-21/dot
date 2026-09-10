@@ -28,23 +28,39 @@ from app.config import get_settings
 from app.core.crypto import generate_signing_keypair
 from app.core.rbac import Role
 from app.core.security import hash_password
+from app.models.alert import Alert
 from app.models.batch import Batch
 from app.models.drug import Drug
 from app.models.entity import Agent, Distributor, Facility, Manufacturer, Pharmacy, Regulator, Vehicle
 from app.models.enums import AgentStatus, DrugCategory
 from app.models.event import Event
+from app.models.notification import Notification
+from app.models.patient_report import PatientReport
 from app.models.refresh_token import RefreshToken
+from app.models.report import Report
+from app.models.return_ import Return
+from app.models.route import Route, RouteStop
 from app.models.sale import Sale
 from app.models.user import User
 from app.seed import seed_batches, seed_data
 
 
 async def _truncate_all_tables(session: AsyncSession) -> None:
-    # Children before parents throughout: refresh_tokens -> users;
-    # events/sales -> batches -> {pharmacies, manufacturers, distributors,
-    # facilities, drugs}; agents/vehicles -> distributors.
+    # Children before parents throughout: refresh_tokens/notifications ->
+    # users; route_stops -> {routes, returns}; returns -> routes (Phase 5
+    # added returns.route_id's FK once routes existed — see
+    # ARCHITECTURE.md's Phase 5 notes); alerts/patient_reports/events/sales
+    # -> batches -> {pharmacies, manufacturers, distributors, facilities,
+    # drugs}; agents/vehicles/routes -> distributors.
     await session.execute(RefreshToken.__table__.delete())
+    await session.execute(Notification.__table__.delete())
+    await session.execute(Report.__table__.delete())  # standalone — no FKs
     await session.execute(User.__table__.delete())
+    await session.execute(Alert.__table__.delete())
+    await session.execute(PatientReport.__table__.delete())
+    await session.execute(RouteStop.__table__.delete())
+    await session.execute(Return.__table__.delete())
+    await session.execute(Route.__table__.delete())
     await session.execute(Event.__table__.delete())
     await session.execute(Sale.__table__.delete())
     await session.execute(Batch.__table__.delete())
@@ -113,8 +129,11 @@ def _seed_demo_users(session: AsyncSession) -> None:
 
 
 async def reset_demo_data(session: AsyncSession) -> None:
-    """Truncates every Phase-1/Phase-2-owned table and re-seeds
-    deterministically. Runs as a single transaction: a failure partway
+    """Truncates every Phase 1-4-owned table and re-seeds deterministically
+    (Phase 3's `alerts`/`patient_reports` and Phase 4's `returns`/
+    `notifications` reset to empty — none of the four are seeded with
+    historical rows, only the entities/batches/events are). Runs as a
+    single transaction: a failure partway
     through rolls back rather than leaving a half-seeded database
     (CLAUDE.md rule 7)."""
     await _truncate_all_tables(session)

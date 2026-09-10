@@ -57,3 +57,75 @@ class EventType(str, enum.Enum):
     FACILITY_SCHEDULED = "FACILITY_SCHEDULED"
     DESTROYED = "DESTROYED"
     REENTRY_BLOCKED = "REENTRY_BLOCKED"
+
+
+class AlertType(str, enum.Enum):
+    """ARCHITECTURE.md §4.7."""
+
+    REENTRY = "REENTRY"
+    QUANTITY_MISMATCH = "QUANTITY_MISMATCH"
+    CERT_MISMATCH = "CERT_MISMATCH"
+    PATIENT_REPORT = "PATIENT_REPORT"
+    QUANTITY_CAP = "QUANTITY_CAP"
+
+
+class AlertSeverity(str, enum.Enum):
+    critical = "critical"
+    high = "high"
+    medium = "medium"
+    low = "low"
+
+
+class AlertStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    INVESTIGATING = "INVESTIGATING"
+    ESCALATED = "ESCALATED"
+    CLOSED = "CLOSED"
+
+
+class ReturnStatus(str, enum.Enum):
+    """ARCHITECTURE.md §5.2. Seven canonical statuses — `ASSIGNED` and
+    `EN_ROUTE` are accepted on input as aliases of `SCHEDULED` and never
+    stored or emitted (see `app.services.return_service`)."""
+
+    REQUESTED = "REQUESTED"
+    SCHEDULED = "SCHEDULED"
+    ARRIVED = "ARRIVED"
+    PICKED_UP = "PICKED_UP"
+    CONFIRMED = "CONFIRMED"
+    DISPUTED = "DISPUTED"
+    FORWARDED = "FORWARDED"
+
+
+class ReturnReason(str, enum.Enum):
+    """ARCHITECTURE.md §4.5."""
+
+    EXPIRED = "EXPIRED"
+    DAMAGED = "DAMAGED"
+    RECALL = "RECALL"
+
+
+class NotificationKind(str, enum.Enum):
+    """ARCHITECTURE.md §4.8."""
+
+    info = "info"
+    warning = "warning"
+    danger = "danger"
+    success = "success"
+
+
+class RouteStatus(str, enum.Enum):
+    """ARCHITECTURE.md §5.3 / §4.6 — lowercase, the frontend compares these literals."""
+
+    planned = "planned"
+    active = "active"
+    completed = "completed"
+
+
+class StopStatus(str, enum.Enum):
+    """ARCHITECTURE.md §4.6."""
+
+    PENDING = "PENDING"
+    CURRENT = "CURRENT"
+    ARRIVED = "ARRIVED"
+    DONE = "DONE"

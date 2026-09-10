@@ -221,6 +221,77 @@ Registering a batch appends `REGISTERED`. Selling decrements quantity and append
 
 Two never-cut capabilities land here, as early as their dependencies allow.
 
+**Status: COMPLETE (2026-09-16).** Re-entry detection and Patient Shield
+are both live and demo-path steps 8 and 9 work end to end against the real
+backend. Summary below; implementation detail lives in ARCHITECTURE.md's
+§7.5.2 "Phase 3 implementation notes".
+
+- **Implemented:** `alerts`, `patient_reports` (migration
+  `0003_phase3_fraud_alerts`); `fraud_service.py` (`check_reentry`,
+  `check_quantity_cap`); `alert_service.py` (raise/list/get/update-status,
+  with the category → severity → recency ordering from §4.7 applied
+  server-side); `verify_service.py` (public verify + suspicious report);
+  re-entry wired into `POST /api/batches` (the `DESTROYED` branch of the
+  existing duplicate-id check) and `POST /api/batches/{id}/sale` (a new
+  check after ownership, before the stock check); `GET /api/alerts`, `GET
+  /api/alerts/{id}` (batch joined, events included), `PATCH
+  /api/alerts/{id}/status` (REGULATOR-only); the public router —`GET
+  /api/public/verify/{batchId}`, `POST /api/public/report` — carrying no
+  auth dependency anywhere, ever; `slowapi`-backed rate limiting on both
+  public routes (default 30/min verify, 5/min report, both configurable);
+  `QUANTITY_CAP` added to the regulator alert type filter
+  (`pages/regulator.jsx`) — additive, no screen redesign, per rule 3.
+- **Verified:** 147/147 tests pass (`pytest -q`; full suite including
+  Phases 0-2). Registering `BATCH-DOX-2026-B04` returns `409
+  BATCH_DESTROYED_REENTRY` with a critical `REENTRY` alert in the response
+  body, appends a `REENTRY_BLOCKED` event, and leaves the batch's quantity
+  and status untouched; repeated attempts each raise their own alert; a
+  duplicate id on a non-destroyed batch is still the Phase 2 flat 409
+  (unchanged). Attempting a sale on a batch a pharmacy still owns after it
+  was destroyed is refused the same way; a non-owner's sale attempt is
+  still 403 before any re-entry check runs (no alert leaks to a
+  non-owner). `/api/public/verify/{batchId}` returns `GENUINE` for A17,
+  `DESTROYED` (with `certId`, `destroyedDate`, and the last 5 events) for
+  B04, and `NOT_FOUND` for both a deliberately-absent id and an arbitrary
+  string, by id, by bare code, and via the `BATCH-` fallback — all with
+  zero credentials, and a route-table-driven test asserts every current
+  and future `/api/public/*` route stays non-401 with no auth header.
+  Public verification of a destroyed batch does not raise a `REENTRY`
+  alert; a follow-up suspicious report does raise `PATIENT_REPORT`, at
+  `critical` severity when the reported batch is destroyed and `high`
+  otherwise. Alert RBAC scoping matches §6.5 exactly (RETAILER/DISTRIBUTOR
+  by own `entityId`, MANUFACTURER by own `manufacturerId`, REGULATOR sees
+  all, PICKUP_AGENT gets 403), alert ordering matches the documented
+  category → severity → recency priority, and `PATCH
+  /api/alerts/{id}/status` is REGULATOR-only and appends a real audit-trail
+  entry. The quantity-cap rule itself (arithmetic, severity by category,
+  sold units still counting, destroyed batches excluded) is verified
+  directly at the service layer.
+- **Known limitations / deviations:** the quantity-cap check is wired into
+  `register_batch` but is structurally unreachable-as-a-breach under the
+  current schema — see ARCHITECTURE.md §7.5.2 for the full reasoning
+  (short version: the duplicate-id gate that Phase 2 already locked in
+  refuses the second registration §7.4's own worked example depends on,
+  before this rule could ever see a genuinely additional incoming
+  quantity). The rule is correct and independently tested
+  (`tests/test_quantity_cap.py`), not a stub — it has no live trigger path
+  today, which is a schema property, not an implementation gap. No alerts
+  are seeded (`QUANTITY_MISMATCH`/`CERT_MISMATCH` depend on Phases 4/6);
+  `POST /api/demo/reset` truncates `alerts`/`patient_reports` to empty
+  rather than fabricating a re-entry incident with no corresponding seeded
+  attempt. `BatchOut.from_model` and batch status derivation
+  (`app/services/batch_status.py`) were extracted out of `batch_service`
+  during this phase, purely to give `alert_service` a batch-join it could
+  use without importing `batch_service` and creating a circular import
+  through `fraud_service` — a refactor, not a behavior change (all 106
+  pre-existing tests still pass unmodified). Notification fan-out
+  (`notification_service.notify(...)` in ARCHITECTURE.md's §7.3 pseudocode)
+  and WebSocket publish are not implemented — that infrastructure doesn't
+  exist until Phases 7-8, so this phase's alerts reach the regulator on
+  refetch only, exactly as BUILDPHASES.md already anticipated for this
+  phase ("the alert reaches the regulator dashboard on refetch rather than
+  in ~2 seconds").
+
 **Build**
 
 - Migrations for `alerts`, `patient_reports`.
@@ -248,6 +319,94 @@ dashboard on refetch rather than in ~2 seconds. The push timing lands in Phase 7
 ---
 
 ## Phase 4 — Return flow and the dispute gate
+
+**Status: COMPLETE (2026-09-17).** The return flow and the dispute gate
+are both live; the last three of the five never-cut capabilities to land
+are this phase's dispute gate plus (partially) the return flow itself —
+certificate binding and the physical pickup chain still wait on Phases 5-6.
+Summary below; implementation detail lives in ARCHITECTURE.md's §7.1.1
+"Phase 4 implementation notes".
+
+- **Implemented:** `returns`, `notifications` (migration
+  `0004_phase4_returns`); `return_service.py` (list/get with §6.5 role
+  scoping, create, distributor receive, resolve, forward, Kanban
+  `set_return_status`); the shared `assert_not_disputed` guard, written so
+  a later phase's certificate binding (§7.2) can import it unchanged;
+  `notification_service.py` (write-only — `notify()`, matching
+  `notificationService.js`'s `notify(role, title, body, kind, link)`
+  signature exactly; read endpoints are Phase 8's job); all seven `/api/returns*`
+  endpoints from §8.3, including the Kanban `PATCH /api/returns/{id}/status`
+  with genuine forward-only transition validation (REQUESTED → SCHEDULED →
+  PICKED_UP → CONFIRMED; no skip, no reverse, no move out of `DISPUTED`) —
+  a real hardening over the mock, which validates none of this client-side
+  drag-and-drop. `fraud_service.check_reentry` and `alert_service.raise_alert`
+  are reused for return-side re-entry and the `QUANTITY_MISMATCH` alert
+  rather than reimplemented; `alert_service.update_status` was refactored
+  to stop committing internally (now a shared `transition()` helper) so
+  `resolve_dispute` can close the mismatch alert inside its own single
+  atomic transaction — the PATCH `/api/alerts/{id}/status` route now owns
+  that commit instead.
+- **Verified:** 191/191 tests pass (`pytest -q`; full suite, Phases 0-4),
+  44 of them new to this phase. The three quantity attestations
+  (`quantityClaimed`, `pickedQuantity`, `quantityReceived`) are confirmed
+  independent end to end — nothing auto-copies one into another anywhere
+  in the codebase, and a dedicated test asserts this directly. A matching
+  receive confirms with no alert; a mismatch produces `DISPUTED`, exactly
+  one `QUANTITY_MISMATCH` alert, and — matching the mock and
+  ARCHITECTURE.md §7.1 exactly — no batch event and no holder change (the
+  batch stays pharmacy-held until confirmation, disputed or resolved).
+  Calling `forward` directly on a disputed return with a valid distributor
+  token, no UI involved, returns `409 CHAIN_HALTED_DISPUTE` with the exact
+  message `"Quantity dispute unresolved. Chain halted."` — the required
+  direct-bypass proof. Blank and whitespace-only resolution notes are both
+  `422 RESOLUTION_NOTES_REQUIRED`; a valid resolution flips the return to
+  `CONFIRMED`, appends `DISPUTE_RESOLVED`, closes the alert with a
+  `RESOLVED_AT_DISTRIBUTOR` audit-trail entry carrying the resolution
+  notes, and genuinely reopens forwarding (asserted by actually forwarding
+  it afterward, not just checking the status field). Forwarding a
+  never-received (`REQUESTED`) return directly is `409
+  RETURN_NOT_CONFIRMED` — never trusts a client-supplied status. Ten
+  state-machine bypass scenarios are each tested directly: forward-while-
+  REQUESTED, forward-while-DISPUTED, resolve-while-not-DISPUTED,
+  receive-on-FORWARDED, repeat-receive-after-CONFIRMED, Kanban stage-skip,
+  Kanban backwards move, Kanban move-out-of-DISPUTED, an unowned/foreign
+  return silently skipped on forward (not leaked), and a garbage status
+  string on the Kanban endpoint. Two concurrent `receive` calls with
+  different quantities against the same return resolve to exactly one
+  200 and one `409 RETURN_NOT_RECEIVABLE` — real PostgreSQL row locking
+  (`return_repo.get_for_update`) serializes them, at most one
+  `DISTRIBUTOR_CONFIRMED` event is ever appended, and the batch's chain
+  still verifies afterward. A full create → dispute → resolve → forward
+  run leaves exactly four events (`REGISTERED`, `RETURN_INITIATED`,
+  `DISPUTE_RESOLVED`, `FORWARDED`) and `verify-chain` reports `valid:
+  true`. `alembic downgrade -1` then `upgrade head` was exercised on the
+  test database. The full create → inbox → dispute → resolve → forward
+  path was additionally run against a live `uvicorn` server (not only
+  pytest) with real HTTP calls and a real database, confirming demo steps
+  1, 2, 3, and 6.
+- **Known limitations / deviations:** ARCHITECTURE.md §7.1's pseudocode
+  gates `receive` on `status in (SCHEDULED, ARRIVED, PICKED_UP)` — statuses
+  only reachable once Phase 5's pickup pipeline exists to advance a return
+  past `REQUESTED`. Since Phase 4 explicitly does not implement pickups,
+  `REQUESTED` was added to the receivable set as a deliberate interim
+  adaptation (documented in ARCHITECTURE.md §7.1.1) — without it, a return
+  created in this phase could never be received at all, and demo step 6
+  would be unreachable. `route_id` is a plain nullable `TEXT` column with
+  no foreign key (`routes` doesn't exist until Phase 5's migration creates
+  it); Phase 5 adds the constraint once the target table exists. No
+  alerts/notifications are seeded on reset — both tables truncate to empty,
+  same as Phase 3's `alerts`/`patient_reports` — a demo session gets its
+  first return-flow notification live. `dispute_notes` exists as a schema
+  column (ARCHITECTURE.md §4.5) but no Phase 4 endpoint ever sets it — the
+  mock never populates it either, and no documented flow explains what
+  would. `forward_returns` treats "not found" and "not this distributor's"
+  the same way (silently skipped, not leaked) but raises immediately for
+  any state-machine violation (`DISPUTED`, not yet `CONFIRMED`) rather than
+  silently skipping those too — a deliberate reading of ARCHITECTURE.md
+  §8.3's "the API reports them instead" against this phase's explicit,
+  repeated requirement that illegal transitions get hard, direct 409s, not
+  soft skip-array entries; see ARCHITECTURE.md §7.1.1 for the full
+  reasoning.
 
 **Build**
 

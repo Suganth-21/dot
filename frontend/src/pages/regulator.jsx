@@ -99,7 +99,7 @@ export function Alerts() {
     <div>
       <PageHeader title="Alerts" subtitle="Re-entry, mismatch, certificate & public reports" icon={AlertTriangle} />
       <Card className="mb-4"><div className="flex flex-wrap gap-3">
-        <Select className="max-w-[180px]" value={type} onChange={(e) => setType(e.target.value)} data-testid="alert-type-filter"><option value="">All types</option><option value="REENTRY">Re-entry</option><option value="QUANTITY_MISMATCH">Quantity mismatch</option><option value="CERT_MISMATCH">Certificate</option><option value="PATIENT_REPORT">Patient report</option></Select>
+        <Select className="max-w-[180px]" value={type} onChange={(e) => setType(e.target.value)} data-testid="alert-type-filter"><option value="">All types</option><option value="REENTRY">Re-entry</option><option value="QUANTITY_MISMATCH">Quantity mismatch</option><option value="CERT_MISMATCH">Certificate</option><option value="PATIENT_REPORT">Patient report</option><option value="QUANTITY_CAP">Quantity cap</option></Select>
         <Select className="max-w-[170px]" value={cat} onChange={(e) => setCat(e.target.value)} data-testid="alert-cat-filter"><option value="">All categories</option><option value="oncology">Oncology</option><option value="antibiotics">Antibiotics</option><option value="cardiovascular">Cardiovascular</option><option value="other">Other</option></Select>
         <Select className="max-w-[160px]" value={district} onChange={(e) => setDistrict(e.target.value)} data-testid="alert-district-filter"><option value="">All districts</option>{["Chennai", "Coimbatore", "Madurai", "Tiruchirappalli", "Salem"].map((d) => <option key={d}>{d}</option>)}</Select>
       </div></Card>

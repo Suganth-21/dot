@@ -71,6 +71,10 @@ async def list_agents(session: AsyncSession, distributor_id: str | None) -> list
     return list(result.scalars().all())
 
 
+async def get_vehicle(session: AsyncSession, vehicle_id: str) -> Vehicle | None:
+    return await session.get(Vehicle, vehicle_id)
+
+
 async def list_vehicles(session: AsyncSession, distributor_id: str | None) -> list[Vehicle]:
     stmt = select(Vehicle).order_by(Vehicle.id)
     if distributor_id:

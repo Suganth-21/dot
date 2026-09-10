@@ -3,12 +3,9 @@ verification. All rule enforcement and role scoping live here — routers
 validate HTTP input and serialize what these functions return (CLAUDE.md
 rule 7). See ARCHITECTURE.md §5.1 (status), §8.2 (contract).
 
-Phase 2 scope only: no re-entry detection, no quantity-cap check, no
-fraud alerts — those are Phase 3 (`app.services.fraud_service`). A
-duplicate batch id is simply rejected here regardless of the existing
-batch's status; Phase 3 replaces that one branch (the `DESTROYED` case)
-with the alert-and-refuse behavior, it does not change anything else in
-this file.
+Phase 3 wires `app.services.fraud_service`'s re-entry detection (§7.3) into
+registration and sale — see the "Phase 3 implementation notes" in
+ARCHITECTURE.md for how the duplicate-id gate and re-entry now interact.
 """
 from __future__ import annotations
 
@@ -32,31 +29,30 @@ from app.schemas.batch import (
     ChainVerificationError,
     ChainVerificationOut,
     EventOut,
-    HolderOut,
     RegisterBatchRequest,
     RegisterBatchResponse,
-    ScheduledFacilityOut,
     SearchResultOut,
 )
-from app.services import event_service
+from app.core.realtime import hub
+from app.schemas.alert import AlertOut
+from app.services import batch_status, event_service, fraud_service
 
-_STICKY_STATUSES = {BatchStatus.IN_RETURN, BatchStatus.DESTROYED}
+_derive_status = batch_status.derive_status  # local alias — this module's existing call sites
 
 
-def _derive_status(expiry_date: datetime, stored_status: BatchStatus, now: datetime) -> BatchStatus:
-    """ARCHITECTURE.md §5.1: `IN_RETURN` and `DESTROYED` are terminal/sticky
-    and never recomputed from expiry. The other three are derived on every
-    read against the pinned demo clock (`DEMO_NOW`) rather than real
-    wall-clock time — ARCHITECTURE.md §4.10 pins the whole system to it so
-    "days to expiry" stays consistent with what the frontend computes."""
-    if stored_status in _STICKY_STATUSES:
-        return stored_status
-    days = (expiry_date - now).days
-    if days < 0:
-        return BatchStatus.EXPIRED
-    if days <= 60:
-        return BatchStatus.EXPIRING_SOON
-    return BatchStatus.ACTIVE
+async def _publish_alert(alert_dict: dict, manufacturer_id: str | None) -> None:
+    """ARCHITECTURE.md §9.2/§9.3 — always called after commit. `hub.publish`
+    is a no-op when Redis isn't configured (e.g. under pytest), so every
+    call site can call this unconditionally."""
+    await hub.publish("alerts:regulator", "alert.created", alert_dict)
+    if manufacturer_id:
+        await hub.publish(f"alerts:manufacturer:{manufacturer_id}", "alert.created", alert_dict)
+
+
+async def _publish_batch_updated(batch: Batch, event_out: dict | None = None) -> None:
+    await hub.publish(
+        f"batch:{batch.id}", "batch.updated", {"batchId": batch.id, "status": batch.status.value, "event": event_out},
+    )
 
 
 async def _scheduled_facility_name(session: AsyncSession, batch: Batch) -> str | None:
@@ -69,43 +65,10 @@ async def _scheduled_facility_name(session: AsyncSession, batch: Batch) -> str |
 def _serialize_batch(batch: Batch, events: list[Event], facility_name: str | None) -> BatchOut:
     now = get_settings().demo_now_dt
     status = _derive_status(batch.expiry_date, batch.status, now)
-
-    holder = None
-    if batch.holder_type and batch.holder_id:
-        holder = HolderOut(type=batch.holder_type, id=batch.holder_id, name=batch.holder_name or "")
-
-    scheduled_facility = None
-    if batch.scheduled_facility_id:
-        scheduled_facility = ScheduledFacilityOut(
-            id=batch.scheduled_facility_id, name=facility_name or "", date=batch.scheduled_facility_date
-        )
-
-    return BatchOut(
-        id=batch.id,
-        code=batch.code,
-        drug_name=batch.drug_name,
-        drug_key=batch.drug_key,
-        category=batch.category,
-        unit_price=float(batch.unit_price),
-        manufacturer_id=batch.manufacturer_id,
-        manufacturer_name=batch.manufacturer_name,
-        pharmacy_id=batch.pharmacy_id,
-        distributor_id=batch.distributor_id,
-        mfg_date=batch.mfg_date,
-        expiry_date=batch.expiry_date,
-        initial_quantity=batch.initial_quantity,
-        quantity=batch.quantity,
-        status=status,
-        holder=holder,
-        scheduled_facility=scheduled_facility,
-        destroyed=batch.destroyed,
-        destroyed_date=batch.destroyed_date,
-        cert_id=batch.cert_id,
-        events=[EventOut.from_model(e) for e in events],
-    )
+    return BatchOut.from_model(batch, status=status, events=events, facility_name=facility_name)
 
 
-async def _to_batch_out(session: AsyncSession, batch: Batch) -> BatchOut:
+async def to_batch_out(session: AsyncSession, batch: Batch) -> BatchOut:
     events = await event_repo.list_for_batch(session, batch.id)
     facility_name = await _scheduled_facility_name(session, batch)
     return _serialize_batch(batch, events, facility_name)
@@ -162,7 +125,7 @@ async def list_batches(
     rows = await batch_repo.list_batches(
         session, status=status, query=query, limit=limit, offset=offset, **filters
     )
-    return [await _to_batch_out(session, b) for b in rows]
+    return [await to_batch_out(session, b) for b in rows]
 
 
 async def get_batch(session: AsyncSession, current_user: User, identifier: str) -> BatchOut:
@@ -170,7 +133,7 @@ async def get_batch(session: AsyncSession, current_user: User, identifier: str) 
     if batch is None:
         raise NotFound("Batch not found.", code="BATCH_NOT_FOUND")
     _check_read_scope(current_user, batch)
-    return await _to_batch_out(session, batch)
+    return await to_batch_out(session, batch)
 
 
 async def search(session: AsyncSession, term: str) -> list[SearchResultOut]:
@@ -199,6 +162,30 @@ async def register_batch(session: AsyncSession, actor: User, payload: RegisterBa
 
     existing = await batch_repo.get_by_id_or_code(session, payload.batch_id)
     if existing is not None:
+        if existing.status == BatchStatus.DESTROYED:
+            # ARCHITECTURE.md §7.3 / §7.5.1's documented deviation: this is
+            # the one branch Phase 3 changes — everything else about
+            # registration (including the flat conflict just below for a
+            # non-destroyed duplicate) is unchanged from Phase 2. Lock the
+            # row first: event_service.append requires the caller already
+            # hold it.
+            locked = await batch_repo.get_for_update(session, existing.id)
+            alert = await fraud_service.check_reentry(
+                session, batch=locked, actor=actor, pharmacy=pharmacy, source="registration",
+            )
+            # The alert and the REENTRY_BLOCKED event must survive even
+            # though the registration itself is refused — commit before
+            # raising, since no batch write happens on this path for the
+            # session teardown to roll back.
+            await session.commit()
+            alert_dict = AlertOut.from_model(alert).model_dump(mode="json", by_alias=True)
+            await _publish_alert(alert_dict, locked.manufacturer_id)
+            raise Conflict(
+                f"Destroyed batch {locked.id} was scanned for registration. "
+                f"A critical re-entry alert has been raised.",
+                code="BATCH_DESTROYED_REENTRY",
+                details={"alert": alert_dict},
+            )
         raise Conflict("A batch with this id already exists.", code="BATCH_ALREADY_EXISTS")
 
     now = datetime.now(timezone.utc)
@@ -248,8 +235,36 @@ async def register_batch(session: AsyncSession, actor: User, payload: RegisterBa
         meta={"quantity": payload.quantity},
         gps=(pharmacy.lat, pharmacy.lng),
     )
+
+    # ARCHITECTURE.md §7.4. `known` here is the row just created above, so
+    # `circulating` (via `batch_repo.sum_registered_units`) always equals
+    # `batch.initial_quantity` exactly — this can structurally never breach
+    # under the current one-row-per-batch-id schema, because the duplicate-
+    # id gate a few lines up already refuses any second registration
+    # attempt before this point could ever be reached with a genuinely
+    # *additional* incoming quantity. Wired in anyway, per §7.4, so the rule
+    # is live and correct the moment a future phase gives it a real second
+    # registration path (nightly sweep, or a top-up flow) — see
+    # BUILDPHASES.md's Phase 3 implementation notes for the full reasoning,
+    # and tests/test_quantity_cap.py for direct, schema-independent coverage
+    # of the rule itself.
+    quantity_cap_alert = await fraud_service.check_quantity_cap(
+        session, batch=batch, incoming_quantity=0, entity_id=actor.entity_id,
+    )
+
     await session.commit()
-    return RegisterBatchResponse(reentry=False, batch=_serialize_batch(batch, [event], None))
+    event_out = EventOut.from_model(event).model_dump(mode="json", by_alias=True)
+    await _publish_batch_updated(batch, event_out)
+    if quantity_cap_alert is not None:
+        await _publish_alert(
+            AlertOut.from_model(quantity_cap_alert).model_dump(mode="json", by_alias=True), batch.manufacturer_id,
+        )
+    return RegisterBatchResponse(
+        reentry=False,
+        batch=_serialize_batch(batch, [event], None),
+        quantity_cap_breach=quantity_cap_alert is not None,
+        alert=AlertOut.from_model(quantity_cap_alert) if quantity_cap_alert else None,
+    )
 
 
 async def record_sale(session: AsyncSession, actor: User, batch_id: str, units: int) -> BatchOut:
@@ -258,6 +273,24 @@ async def record_sale(session: AsyncSession, actor: User, batch_id: str, units: 
         raise NotFound("Batch not found.", code="BATCH_NOT_FOUND")
     if batch.pharmacy_id != actor.entity_id:
         raise Forbidden("This batch does not belong to your pharmacy.", code="NOT_YOUR_BATCH")
+
+    if batch.status == BatchStatus.DESTROYED:
+        # ARCHITECTURE.md §7.3: a DESTROYED batch re-entering circulation
+        # via a sale attempt is the same rule as registration — refuse and
+        # alert, don't silently allow. `batch` is already locked above.
+        pharmacy = await reference_repo.get_pharmacy(session, actor.entity_id)
+        alert = await fraud_service.check_reentry(
+            session, batch=batch, actor=actor, pharmacy=pharmacy, source="sale",
+        )
+        await session.commit()
+        alert_dict = AlertOut.from_model(alert).model_dump(mode="json", by_alias=True)
+        await _publish_alert(alert_dict, batch.manufacturer_id)
+        raise Conflict(
+            f"Destroyed batch {batch.id} cannot be sold. A critical re-entry alert has been raised.",
+            code="BATCH_DESTROYED_REENTRY",
+            details={"alert": alert_dict},
+        )
+
     if batch.quantity < units:
         raise Conflict("Not enough stock to record this sale.", code="INSUFFICIENT_STOCK",
                         details={"available": batch.quantity, "requested": units})
@@ -276,7 +309,7 @@ async def record_sale(session: AsyncSession, actor: User, batch_id: str, units: 
     )
     await sale_repo.create(session, sale)
 
-    await event_service.append(
+    event = await event_service.append(
         session,
         batch=batch,
         event_type=EventType.SALE,
@@ -287,7 +320,8 @@ async def record_sale(session: AsyncSession, actor: User, batch_id: str, units: 
         gps=(pharmacy.lat, pharmacy.lng) if pharmacy else None,
     )
     await session.commit()
-    return await _to_batch_out(session, batch)
+    await _publish_batch_updated(batch, EventOut.from_model(event).model_dump(mode="json", by_alias=True))
+    return await to_batch_out(session, batch)
 
 
 async def verify_chain(session: AsyncSession, identifier: str) -> ChainVerificationOut:

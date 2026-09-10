@@ -7,3 +7,15 @@ __pycache__/
 .venv/
 venv/
 backend/.env
+
+# Local dev PostgreSQL (portable binaries + data dir) — machine-specific,
+# not part of the repo. See CLAUDE.md rule 1 / handoff notes for setup.
+.pgbin/
+.pgdata/
+
+# Local dev Redis (portable binary) — same reasoning.
+.redisbin/
+*.rdb
+
+# Phase 9 real photo uploads — user content, not repo content.
+backend/uploads/

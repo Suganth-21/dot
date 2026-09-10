@@ -28,6 +28,14 @@ async def list_for_batch(session: AsyncSession, batch_id: str) -> list[Event]:
     return list(result.scalars().all())
 
 
+async def types_for_batch(session: AsyncSession, batch_id: str) -> set:
+    """ARCHITECTURE.md §7.2: `assert_cert_eligible` checks which event
+    types a batch's chain already contains (e.g. has it ever seen a
+    `FORWARDED` event) without needing every event's full row."""
+    result = await session.execute(select(Event.type).where(Event.batch_id == batch_id))
+    return {row[0] for row in result.all()}
+
+
 async def create(session: AsyncSession, event: Event) -> Event:
     session.add(event)
     return event

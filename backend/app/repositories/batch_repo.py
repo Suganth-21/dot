@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.batch import Batch
+from app.models.enums import BatchStatus
 
 
 async def get_by_id(session: AsyncSession, batch_id: str) -> Batch | None:
@@ -78,6 +79,21 @@ async def search(session: AsyncSession, term: str, limit: int = 12) -> list[Batc
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def sum_registered_units(session: AsyncSession, batch_id: str) -> int:
+    """ARCHITECTURE.md §7.4: "must count units registered across all
+    pharmacies for that batch id ... excluding units destroyed through a
+    completed return." `batches.id` is a primary key, so today this is
+    always 0 or 1 rows — written as a genuine aggregate (not a single
+    `get()`) so it stays correct if a future phase ever allows more than
+    one registration to share a batch id (see fraud_service.check_quantity_cap's
+    docstring for why that matters now)."""
+    stmt = select(func.coalesce(func.sum(Batch.initial_quantity), 0)).where(
+        Batch.id == batch_id, Batch.status != BatchStatus.DESTROYED
+    )
+    result = await session.execute(stmt)
+    return int(result.scalar_one())
 
 
 async def delete_all(session: AsyncSession) -> None:

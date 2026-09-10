@@ -136,12 +136,53 @@ batches with complete, independently-verifiable event histories, including
 both hero batches (`BATCH-DOX-2026-A17` expiring-soon, `BATCH-DOX-2026-B04`
 already destroyed with a complete 8-event chain) — see `BUILDPHASES.md`.
 
-Returns, pickups, the fraud engine (re-entry detection, quantity-cap),
-certificates, Patient Shield, analytics, notifications, WebSockets, and
-every other later-phase feature do not exist yet — that starts at Phase 3.
-Batch registration currently rejects any duplicate id outright; it does not
-yet distinguish "already exists" from "was destroyed and is reappearing"
-(that distinction, and the alert it fires, is Phase 3's re-entry detection).
+Phase 3 adds the fraud engine and Patient Shield — the first two of the
+five never-cut capabilities to go live. `fraud_service.py` implements
+re-entry detection (wired into `POST /api/batches` and `POST
+/api/batches/{id}/sale`: registering or selling against a batch already
+marked `DESTROYED` is refused with `409 BATCH_DESTROYED_REENTRY`, a
+critical alert, and a `REENTRY_BLOCKED` event) and the quantity-cap check
+(implemented and independently tested, though it has no live trigger
+through the API yet — see BUILDPHASES.md's Phase 3 notes for why).
+`alert_service.py` and the `alerts` table back `GET /api/alerts`, `GET
+/api/alerts/{id}`, and regulator-only `PATCH /api/alerts/{id}/status`,
+with the category → severity → recency priority ordering applied
+server-side. The public router (`/api/public/verify/{batchId}`, `/api/public/report`)
+carries no auth dependency anywhere — enforced by a test that scans the
+live route table — and is rate-limited. Demo steps 8 and 9 both work
+end to end: scanning the pre-destroyed `BATCH-DOX-2026-B04` fires a
+real re-entry alert, and `/verify` returns the correct verdict for all
+three demo codes with zero credentials.
+
+Phase 4 adds the return flow and its dispute gate — the third of the five
+never-cut capabilities. `return_service.py` implements the full lifecycle:
+`POST /api/returns` (create, RETAILER-only, with ownership/state/quantity
+checks and re-entry reuse for a destroyed batch), `PATCH
+/api/returns/{id}/receive` (the distributor's independent quantity
+attestation — a match confirms and appends `DISTRIBUTOR_CONFIRMED`; a
+mismatch fires `DISPUTED` plus a real `QUANTITY_MISMATCH` alert, with no
+batch event and no holder change until it clears), `PATCH
+/api/returns/{id}/resolve` (requires non-blank resolution notes, appends
+`DISPUTE_RESOLVED`, closes the alert), `POST /api/returns/forward` (blocked
+by the shared `assert_not_disputed` guard — calling it directly on a
+disputed return, no UI involved, is a real `409 CHAIN_HALTED_DISPUTE`), and
+`PATCH /api/returns/{id}/status` (the Kanban drag endpoint, now with real
+forward-only transition validation the mock never had). The three quantity
+attestations — `quantityClaimed`, `pickedQuantity`, `quantityReceived` —
+stay genuinely independent everywhere; nothing auto-copies one into
+another. `notification_service.py` and the new `notifications` table give
+Phase 4 write-only notification persistence (read endpoints are Phase 8's
+job). Two concurrent `receive` calls on the same return resolve to exactly
+one outcome via real PostgreSQL row locking. Demo steps 1, 2, 3, and 6 all
+work end to end on a real backend, verified against a live server, not
+only pytest.
+
+Pickups, certificates, analytics, and WebSockets do not exist yet — that
+starts at Phase 5. Alerts and notifications are not seeded on reset (the
+alert types and lifecycle notifications that depend on returns/pickups/
+certificates can't be seeded honestly until each phase exists); a demo
+session gets its first alert and notification live, from an actual
+action — re-entry attempt, patient report, or return-flow state change.
 
 The frontend still runs entirely on its own mocked data — nothing in
 `frontend/src/services/*.js` has been pointed at the backend yet. That swap

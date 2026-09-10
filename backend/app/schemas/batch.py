@@ -116,10 +116,65 @@ class BatchOut(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    @classmethod
+    def from_model(
+        cls, batch: Any, *, status: BatchStatus, events: list[Any], facility_name: str | None = None
+    ) -> "BatchOut":
+        """Assembles the wire shape from an ORM `Batch` row plus its
+        already-derived status (see `app.services.batch_status`) and
+        already-loaded events. A leaf classmethod rather than a
+        `batch_service`-only helper so `alert_service` can embed a full
+        `BatchOut` (events included — the regulator alert detail page's
+        `HashChain` needs them) in `GET /api/alerts/{id}` without importing
+        `batch_service` and risking a circular import through
+        `fraud_service` (ARCHITECTURE.md §2's one-way dependency direction).
+        """
+        holder = None
+        if batch.holder_type and batch.holder_id:
+            holder = HolderOut(type=batch.holder_type, id=batch.holder_id, name=batch.holder_name or "")
+
+        scheduled_facility = None
+        if batch.scheduled_facility_id:
+            scheduled_facility = ScheduledFacilityOut(
+                id=batch.scheduled_facility_id, name=facility_name or "", date=batch.scheduled_facility_date
+            )
+
+        return cls(
+            id=batch.id,
+            code=batch.code,
+            drug_name=batch.drug_name,
+            drug_key=batch.drug_key,
+            category=batch.category,
+            unit_price=float(batch.unit_price),
+            manufacturer_id=batch.manufacturer_id,
+            manufacturer_name=batch.manufacturer_name,
+            pharmacy_id=batch.pharmacy_id,
+            distributor_id=batch.distributor_id,
+            mfg_date=batch.mfg_date,
+            expiry_date=batch.expiry_date,
+            initial_quantity=batch.initial_quantity,
+            quantity=batch.quantity,
+            status=status,
+            holder=holder,
+            scheduled_facility=scheduled_facility,
+            destroyed=batch.destroyed,
+            destroyed_date=batch.destroyed_date,
+            cert_id=batch.cert_id,
+            events=[EventOut.from_model(e) for e in events],
+        )
+
 
 class RegisterBatchResponse(BaseModel):
     reentry: bool = False
     batch: BatchOut
+    # ARCHITECTURE.md §7.4 / §8.2: quantity-cap breaches are flagged, not
+    # refused — registration still succeeds (`Any` here, not `AlertOut`,
+    # to avoid this schema module importing app.schemas.alert, which itself
+    # imports BatchOut from here).
+    quantity_cap_breach: bool = Field(default=False, serialization_alias="quantityCapBreach")
+    alert: Any | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SearchResultOut(BaseModel):

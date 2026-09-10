@@ -938,6 +938,79 @@ entry.
 - Two concurrent receive calls with different quantities → one wins, no
   double-event; assert `sequence` has no gap and no duplicate.
 
+#### 7.1.1 Phase 4 implementation notes
+
+Recorded here so Phase 5 doesn't have to rediscover it by reading diffs.
+
+- **`receive` accepts `REQUESTED`, not only `(SCHEDULED, ARRIVED, PICKED_UP)`.**
+  This section's own pseudocode above gates `distributor_receive` on a
+  return already having passed through Phase 5's pickup pipeline. Phase 4
+  explicitly does not implement pickups/routes (BUILDPHASES.md), so a
+  return created by `create_return` has no way to ever leave `REQUESTED`
+  on its own — gating `receive` exactly as written above would make every
+  return created in this phase permanently unreceivable, and demo step 6
+  (the dispute gate firing) unreachable. `return_service._RECEIVABLE_STATUSES`
+  is `(REQUESTED, SCHEDULED, ARRIVED, PICKED_UP)` — a deliberate, documented
+  interim widening, not an oversight. Once Phase 5 lands, returns will
+  routinely reach `receive` already past `REQUESTED` via the real pickup
+  flow; `REQUESTED` stays valid for a distributor who receives directly
+  without ever creating a route, which is a legitimate manual path the
+  Kanban board (see below) already exposes.
+- **The dispute gate is one function, reused, not reimplemented per call
+  site.** `return_service.assert_not_disputed(ret)` is called by
+  `forward_returns` and by `set_return_status` (the Kanban drag endpoint —
+  §5.2's "must reject any move out of `DISPUTED`" applies there too, not
+  only to `forward`). It is a plain function over a `Return | None`, no
+  return-service-specific state, so Phase 6's `manufacturer_service.assert_cert_eligible`
+  (§7.2) can import and call it unchanged, exactly as this document already
+  specifies as the design (§7.2's own pseudocode: `assert_not_disputed(ret)
+  # §7.1, reused`).
+- **`forward_returns`'s bulk tolerance has a boundary.** §8.3 documents
+  `{ok, forwarded[], skipped[]}` and says "the mock silently skipped
+  non-`CONFIRMED` returns; the API reports them instead" — read in
+  isolation that could mean every non-forwardable return in a bulk request
+  is quietly added to `skipped` with a 200 response. Phase 4 draws the line
+  differently, and deliberately: a return that's missing or belongs to
+  another distributor is data/identity noise and goes into `skipped`
+  (matching the tolerant bulk-select use case — a distributor mass-forwards
+  everything `CONFIRMED` in their inbox and a couple of ids have since
+  moved on); a return that exists, is theirs, but is in an illegal state
+  for forwarding (`DISPUTED`, or simply not yet `CONFIRMED`) raises a hard
+  409 for the whole call instead — `CHAIN_HALTED_DISPUTE` via
+  `assert_not_disputed`, or `RETURN_NOT_CONFIRMED` otherwise. This is what
+  makes the direct-bypass proof (§7.1's own "How to test" list, third
+  bullet) actually a 409 rather than a 200 with an empty `forwarded[]` —
+  and generalizes "never trust a client-supplied status" to every illegal
+  transition, not only the dispute gate specifically.
+- **The Kanban endpoint (`PATCH /api/returns/{id}/status`) validates
+  transitions the mock never did.** `setReturnStatus` in the mock accepts
+  any status unconditionally (only the *frontend page*, not the service
+  function, blocks dragging out of `DISPUTED` — see §5.2's note that this
+  is client-side only). The real endpoint enforces a strict forward-only
+  adjacency (`REQUESTED → SCHEDULED → PICKED_UP → CONFIRMED`, no skip, no
+  reverse) server-side, on top of the shared dispute gate, consistent with
+  CLAUDE.md rule 2's "assume the UI is not involved." `ASSIGNED`/`EN_ROUTE`
+  are still accepted as input aliases of `SCHEDULED` per §5.2, even though
+  the current Kanban UI's four columns never send them.
+- **Notifications are write-only in Phase 4.** `notification_service.notify()`
+  persists a row and returns it; there is no `GET /api/notifications` yet
+  (Phase 8 owns the read/mark-read endpoints per BUILDPHASES.md). Every
+  return-lifecycle notification in this phase broadcasts by role
+  (`user_id = NULL`), matching `notificationService.js`'s own `notify(role,
+  …)` signature — no per-user targeting exists yet either.
+- **`alert_service.update_status` no longer commits internally.** Phase 3
+  originally committed inside that function since `PATCH
+  /api/alerts/{id}/status` was its only caller. Phase 4's
+  `resolve_dispute` needs to close the `QUANTITY_MISMATCH` alert inside its
+  *own* single transaction (alongside the return's status change, the
+  `DISPUTE_RESOLVED` event, and the notification), so the commit moved to
+  the route handler and the status/audit-trail mutation itself was
+  factored out into `alert_service.transition()` — a shared, non-committing
+  helper both the route and `resolve_dispute` call, with an optional
+  `action`/`notes` override so `resolve_dispute` can record
+  `RESOLVED_AT_DISTRIBUTOR` (matching the mock) instead of the generic
+  status-value label `PATCH /api/alerts/{id}/status` uses.
+
 ### 7.2 Certificate binding
 
 **Trigger:** `POST /api/manufacturer/certificates` for a batch.
@@ -1219,6 +1292,91 @@ Recorded here so Phase 3 doesn't have to rediscover it by reading diffs.
   3's re-entry detection replaces only the `DESTROYED` branch of that
   check with the alert-and-refuse behavior in §7.3 — everything else about
   registration is unchanged.
+
+#### 7.5.2 Phase 3 implementation notes
+
+Recorded here so Phase 4 doesn't have to rediscover it by reading diffs.
+
+- **Re-entry is wired into both registration and sale.**
+  `batch_service.register_batch`'s existing-id branch calls
+  `fraud_service.check_reentry` only when the existing row is `DESTROYED`
+  (unchanged from Phase 2 otherwise, per §7.5.1's note above);
+  `batch_service.record_sale` gained a new check — after the ownership
+  check, before the stock check — for the case where a pharmacy still owns
+  (`batch.pharmacy_id`) a batch that has since been destroyed and tries to
+  sell against it. Both call sites commit before raising the `409
+  BATCH_DESTROYED_REENTRY` — the alert and the `REENTRY_BLOCKED` event must
+  survive even though the write that triggered them is refused, and since
+  neither path ever calls `batch_repo.create`/mutates `batch.quantity`,
+  there is nothing on that path for an uncommitted-session rollback to
+  discard.
+- **The quantity-cap check is real but structurally dormant under the
+  current schema — this is intentional, not a bug to fix.**
+  `fraud_service.check_quantity_cap` and `batch_repo.sum_registered_units`
+  implement §7.4's algorithm exactly and are independently correct
+  (`tests/test_quantity_cap.py` calls the rule directly, the same way
+  `tests/test_tampering.py` calls `event_service.verify_chain` directly).
+  But `batches.id` is a primary key, and the duplicate-id gate a few lines
+  above `register_batch`'s call to this check already refuses any second
+  registration attempt under a non-destroyed existing id — so by the time
+  `check_quantity_cap` runs (on the row *just* created), `circulating`
+  always equals that same row's own `initial_quantity` exactly, and it can
+  never breach. §7.4's own worked "how to test" example (register 50 at
+  pharmacy A, then 30 more of the *same batch id* at pharmacy B) describes
+  a two-registration flow this schema cannot express without changing the
+  duplicate-id gate's non-destroyed branch — a change §7.5.1 explicitly
+  scoped Phase 3 *not* to make. Options for a future phase: a nightly sweep
+  over all batches (BUILDPHASES.md's cut list already anticipates this),
+  or a deliberate "top up an existing batch id" registration mode if that
+  is ever a real product requirement. Until then, this rule is correct,
+  tested, and live in the code path — it simply has no way to fire through
+  the API today, and that is a property of the schema, not of the rule.
+- **`BatchOut.from_model` moved from a private `batch_service` helper to a
+  classmethod on the schema itself** (`app/schemas/batch.py`), and batch
+  status derivation moved out of `batch_service` entirely into a new leaf
+  module, `app/services/batch_status.py`. Both were forced by one
+  requirement: `GET /api/alerts/{id}` embeds the full batch (events
+  included — the regulator alert detail page's `HashChain` component reads
+  `alert.batch.events`) without `alert_service` importing `batch_service`.
+  Importing it would create `batch_service` -> `fraud_service` ->
+  `alert_service` -> `batch_service`, a circular import. `alert_service`
+  instead builds the batch join from repositories directly
+  (`alert_service._batch_out`), sharing only the leaf-level
+  `batch_status.derive_status` and `BatchOut.from_model` with
+  `batch_service` — neither has any further dependency, so the cycle can't
+  reoccur.
+- **No alerts are seeded.** BUILDPHASES.md's seed-data-spec table lists 5
+  alerts (3 `REENTRY`, 1 `QUANTITY_MISMATCH`, 1 `CERT_MISMATCH`), but the
+  latter two depend on `returns` and certificates, which don't exist until
+  Phases 4 and 6. Fabricating a `REENTRY` alert with no corresponding live
+  attempt in the seeded event history would misrepresent what actually
+  happened. `POST /api/demo/reset` truncates `alerts`/`patient_reports`
+  (children of `batches`, alongside `events`/`sales`) but seeds them empty;
+  demo step 8 (scan `BATCH-DOX-2026-B04`) creates a real one live. The full
+  5-alert seed lands once Phases 4 and 6 give the other two types a
+  genuine history to seed from.
+- **Public verification of a destroyed batch never raises a `REENTRY`
+  alert** — only a follow-up `POST /api/public/report` does (as
+  `PATIENT_REPORT`, severity `critical` when the reported batch is
+  `DESTROYED` else `high`). This is §7.3's own distinction: a patient
+  checking a box is not evidence a pharmacy is selling it.
+- **Rate limiting** uses `slowapi`, attached once in `app/main.py`
+  (`app.state.limiter`, `SlowAPIMiddleware`, the `RateLimitExceeded`
+  handler translating to the standard §10 envelope) but with limits
+  declared per-route in `routes_public.py` via
+  `@limiter.limit(lambda: get_settings().public_verify_rate_limit)` — a
+  callable, not a bare string, so the configured limit is read fresh per
+  request rather than frozen at import time (this is also what makes the
+  limits overridable in tests via `monkeypatch.setattr` on the cached
+  `Settings` instance). One gotcha worth flagging for whoever next edits
+  `routes_public.py`: it must **never** gain a module-level `from
+  __future__ import annotations`. With it, FastAPI resolves a
+  slowapi-wrapped endpoint's string type annotations against the wrapper
+  function's own `__globals__` (from `slowapi/extension.py`, not this
+  module) and silently falls back to treating a Pydantic body model as a
+  query parameter — this cost real debugging time getting
+  `POST /api/public/report` working and is why no other file under
+  `app/api/` uses that import either.
 
 ### 7.6 Rule interaction summary
 
