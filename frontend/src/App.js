@@ -3,9 +3,9 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import {
-  LayoutDashboard, Boxes, RotateCcw, ShoppingCart, BarChart3, Bell, PlusCircle,
+  LayoutDashboard, Boxes, RotateCcw, ShoppingCart, BarChart3, Bell,
   Inbox, Truck, Route as RouteIcon, AlertTriangle, Send, Users, Map, FileText,
-  Building2, FileCheck2, Calendar, ClipboardList, History, ShieldCheck,
+  Building2, FileCheck2, History,
 } from "lucide-react";
 
 import { useAuth } from "./store/authStore";
@@ -64,6 +64,7 @@ const regulatorNav = [
   { to: "/regulator/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/regulator/alerts", label: "Alerts", icon: AlertTriangle },
   { to: "/regulator/batches", label: "Batches", icon: Boxes },
+  { to: "/regulator/returns", label: "Returns", icon: RotateCcw },
   { to: "/regulator/entities", label: "Entities", icon: Users },
   { to: "/regulator/fleet-map", label: "Fleet Map", icon: Map },
   { to: "/regulator/analytics", label: "Analytics", icon: BarChart3 },
@@ -152,6 +153,8 @@ export default function App() {
             <Route path="alerts/:alertId" element={<R.AlertDetail />} />
             <Route path="batches" element={<R.Batches />} />
             <Route path="batches/:batchId" element={<R.BatchAudit />} />
+            <Route path="returns" element={<R.Returns />} />
+            <Route path="returns/:returnId" element={<R.ReturnAudit />} />
             <Route path="entities" element={<R.Entities />} />
             <Route path="entities/:entityId" element={<R.EntityDetail />} />
             <Route path="fleet-map" element={<R.FleetMap />} />

@@ -215,7 +215,8 @@ export function CertUpload() {
   const [file, setFile] = useState(false);
 
   const mut = useAppMutation(() => mfrSvc.uploadCertificate(batchId, { certId: `CERT-${batch.code}-2026`, fileName: "destruction-cert.pdf" }, { id: mid, name: user?.name, role: "MANUFACTURER" }), {
-    onSuccess: (res) => { if (res.ok) { toast.success("Certificate bound — batch DESTROYED"); nav("/manufacturer/certificates"); } else toast.error(res.reason); },
+    onSuccess: () => { toast.success("Certificate bound — batch DESTROYED"); nav("/manufacturer/certificates"); },
+    onError: (err) => toast.error(err.message || "Certificate upload blocked"),
   });
 
   if (!batch) return <LoadingState rows={4} />;

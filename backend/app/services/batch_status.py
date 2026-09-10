@@ -22,7 +22,20 @@ def derive_status(expiry_date: datetime, stored_status: BatchStatus, now: dateti
     stays consistent with what the frontend computes."""
     if stored_status in _STICKY_STATUSES:
         return stored_status
-    days = (expiry_date - now).days
+    # Calendar-day comparison, not a raw datetime subtraction: `expiry_date`
+    # on a *newly registered* batch is whatever a real client sent on the
+    # wire, and a plain `type="date"` HTML input (frontend/src/pages/
+    # pharmacy.jsx's InventoryAdd form) produces a date with no time
+    # component, which Pydantic parses as a timezone-naive `datetime` —
+    # subtracting that directly from `now` (always timezone-aware, from
+    # DEMO_NOW's `+05:30` offset) raises `TypeError: can't subtract
+    # offset-naive and offset-aware datetimes` and 500s every registration
+    # of a batch with a date-only expiry. `.date()` on both sides sidesteps
+    # naive/aware entirely and matches what "days to expiry" already means
+    # everywhere else in this codebase (whole calendar days, not sub-day
+    # precision) — including the frontend's own day-rounding
+    # (`Math.round((new Date(batch.expiryDate) - now) / 86400000)`).
+    days = (expiry_date.date() - now.date()).days
     if days < 0:
         return BatchStatus.EXPIRED
     if days <= 60:

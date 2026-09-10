@@ -5,12 +5,13 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   AlertTriangle, Boxes, Trash2, Clock, Users, Map as MapIcon, TrendingUp, FileText,
-  Search, ChevronRight, ShieldCheck, Printer, Download, Landmark, Activity, Lock,
+  Search, ChevronRight, ShieldCheck, Printer, Download, Landmark, Activity, Lock, RotateCcw,
 } from "lucide-react";
 
 import { useLive } from "../hooks/useDb";
 import { useAppMutation } from "../hooks/useAppMutation";
 import * as batchSvc from "../services/batchService";
+import * as returnSvc from "../services/returnService";
 import * as alertSvc from "../services/alertService";
 import * as entitySvc from "../services/entityService";
 import * as analytics from "../services/analyticsService";
@@ -205,6 +206,94 @@ export function BatchAudit() {
         <Card className="lg:col-span-2"><SectionTitle>Cryptographic event chain</SectionTitle><HashChain events={batch.events} showGps /></Card>
         <Card className="p-0"><div className="p-5 pb-3"><SectionTitle>Event GPS trail</SectionTitle></div>
           <LiveMap height={420} markers={batch.events.map((e, i) => ({ lat: e.gps.lat, lng: e.gps.lng, label: `${i + 1}. ${e.type}`, color: "#5b6cff" }))} routePath={batch.events.map((e) => e.gps)} center={[batch.events[0]?.gps.lat || 13.08, batch.events[0]?.gps.lng || 80.27]} />
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ============================ RETURNS (national, read-only) ==================
+// Full cross-entity visibility into the return pipeline — every phase, every
+// pharmacy/distributor, not scoped to any one actor's own inbox. The
+// regulator role is read-only over operational data (ARCHITECTURE.md §6.5:
+// "a regulator who can edit the ledger they audit is not an auditor"), so
+// this is a view, never a mutation surface — no receive/resolve/forward
+// actions live here, only the distributor's own portal has those.
+const RETURN_STATUSES = ["REQUESTED", "SCHEDULED", "ARRIVED", "PICKED_UP", "CONFIRMED", "DISPUTED", "FORWARDED"];
+
+export function Returns() {
+  const nav = useNavigate();
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const { data: returns, isLoading } = useQuery({ queryKey: ["reg-returns"], queryFn: () => returnSvc.listReturns({}) });
+  const rows = useMemo(() => (returns || [])
+    .filter((r) => !status || r.status === status)
+    .filter((r) => !q || r.drugName.toLowerCase().includes(q.toLowerCase()) || r.batchId.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), [returns, q, status]);
+  const disputedCount = (returns || []).filter((r) => r.status === "DISPUTED").length;
+
+  if (isLoading) return <LoadingState />;
+  return (
+    <div>
+      <PageHeader title="Returns — national pipeline" subtitle="Every return, every pharmacy and distributor, every phase" icon={RotateCcw}
+        actions={disputedCount > 0 && <Badge tone="rose">{disputedCount} disputed</Badge>} />
+      <Card className="mb-4"><div className="flex flex-wrap gap-3">
+        <div className="relative flex-1 min-w-[200px]"><Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-clay-muted" /><Input className="pl-10" placeholder="Search drug or batch…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="reg-return-search" /></div>
+        <Select className="max-w-[180px]" value={status} onChange={(e) => setStatus(e.target.value)} data-testid="reg-return-status-filter">
+          <option value="">All statuses</option>
+          {RETURN_STATUSES.map((s) => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
+        </Select>
+      </div></Card>
+      {rows.length === 0 ? <EmptyState title="No returns match" icon={RotateCcw} /> : (
+        <Card className="overflow-hidden p-0"><div className="overflow-x-auto"><table className="w-full text-sm">
+          <thead><tr className="border-b border-clay-line text-left text-xs uppercase tracking-wide text-clay-muted">
+            <th className="px-5 py-3">Batch</th><th className="px-5 py-3">Drug</th><th className="px-5 py-3">Claimed</th><th className="px-5 py-3">Received</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Created</th><th className="px-5 py-3"></th>
+          </tr></thead>
+          <tbody>{rows.slice(0, 100).map((r) => (
+            <tr key={r.id} className={cn("cursor-pointer border-b border-clay-line/60 hover:bg-clay-surface", r.status === "DISPUTED" && "bg-rose2-soft/30")} onClick={() => nav(`/regulator/returns/${r.id}`)} data-testid={`reg-return-${r.id}`}>
+              <td className="px-5 py-3 font-mono text-xs text-clay-muted">{r.batchId}</td>
+              <td className="px-5 py-3 font-semibold text-clay-ink">{r.drugName}</td>
+              <td className="px-5 py-3 tnum text-clay-muted">{r.quantityClaimed}</td>
+              <td className="px-5 py-3 tnum text-clay-muted">{r.quantityReceived ?? "—"}</td>
+              <td className="px-5 py-3"><StatusPill status={r.status} /></td>
+              <td className="px-5 py-3 text-clay-muted">{timeAgo(r.createdAt)}</td>
+              <td className="px-5 py-3 text-right"><ChevronRight className="inline h-4 w-4 text-clay-muted" /></td>
+            </tr>
+          ))}</tbody>
+        </table></div></Card>
+      )}
+    </div>
+  );
+}
+
+export function ReturnAudit() {
+  const { returnId } = useParams();
+  const nav = useNavigate();
+  const { data: ret } = useQuery({ queryKey: ["reg-return", returnId], queryFn: () => returnSvc.getReturn(returnId) });
+  if (!ret) return <LoadingState rows={5} />;
+  return (
+    <div>
+      <button onClick={() => nav(-1)} className="mb-3 text-sm font-semibold text-clay-muted">← Back to returns</button>
+      <PageHeader title="Return audit" subtitle={`${ret.drugName} · ${ret.batchId}`} icon={RotateCcw}
+        actions={<StatusPill status={ret.status} />} />
+      {ret.status === "DISPUTED" && (
+        <Card tint="rose" className="mb-4">
+          <div className="flex items-center gap-3"><AlertTriangle className="h-6 w-6 text-rose2" /><div className="text-sm font-semibold text-clay-ink">Quantity dispute unresolved — claimed {ret.quantityClaimed}, received {ret.quantityReceived ?? "—"}. Chain halted until the distributor files resolution notes.</div></div>
+        </Card>
+      )}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-1">
+          <SectionTitle>Return record</SectionTitle>
+          <div className="space-y-2 text-sm">
+            <Row k="Pharmacy" v={ret.pharmacy?.name || ret.pharmacyId} /><Row k="Distributor" v={ret.distributor?.name || ret.distributorId} />
+            <Row k="Reason" v={ret.reason} /><Row k="Claimed qty" v={ret.quantityClaimed} /><Row k="Picked qty" v={ret.pickedQuantity ?? "—"} /><Row k="Received qty" v={ret.quantityReceived ?? "—"} />
+            <Row k="Created" v={formatDateTime(ret.createdAt)} /><Row k="Updated" v={formatDateTime(ret.updatedAt)} />
+            {ret.resolutionNotes && <Row k="Resolution notes" v={ret.resolutionNotes} />}
+          </div>
+        </Card>
+        <Card className="lg:col-span-2">
+          <SectionTitle>Linked batch chain</SectionTitle>
+          {ret.batch ? <HashChain events={ret.batch.events} showGps /> : <p className="text-sm text-clay-muted">No batch linked.</p>}
         </Card>
       </div>
     </div>

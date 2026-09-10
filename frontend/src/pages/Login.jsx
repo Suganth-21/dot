@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 import { ArrowRight, ShieldCheck, Store, Truck, Bike, Factory, Landmark } from "lucide-react";
 import { Logo } from "../components/layout/Logo";
 import { Card, Button, Input, Label } from "../components/ui";
@@ -11,13 +12,36 @@ const ICONS = { RETAILER: Store, DISTRIBUTOR: Truck, PICKUP_AGENT: Bike, MANUFAC
 
 export default function Login() {
   const nav = useNavigate();
-  const { login } = useAuth();
+  const { login, demoLogin } = useAuth();
   const [splash, setSplash] = useState(null);
   const [hoveredIdx, setHoveredIdx] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const quickLogin = (acc) => { 
-    login(acc); 
-    setSplash({ color: acc.themeColor, home: acc.home }); 
+  const quickLogin = async (acc) => {
+    try {
+      const user = await demoLogin(acc.role);
+      setSplash({ color: user.themeColor || acc.themeColor, home: user.home || acc.home });
+    } catch (err) {
+      toast.error(err.message || "Demo sign-in failed.");
+    }
+  };
+
+  const submitLogin = async () => {
+    if (!email || !password) {
+      toast.error("Enter your email and password.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const user = await login(email, password);
+      setSplash({ color: user.themeColor, home: user.home });
+    } catch (err) {
+      toast.error(err.message || "Invalid credentials.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -61,13 +85,13 @@ export default function Login() {
             <div className="mt-5 space-y-3">
               <div>
                 <Label>Email</Label>
-                <Input placeholder="you@company.in" defaultValue="" data-testid="login-email" />
+                <Input placeholder="you@company.in" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="login-email" />
               </div>
               <div>
                 <Label>Password</Label>
-                <Input type="password" placeholder="••••••••" data-testid="login-password" />
+                <Input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} data-testid="login-password" />
               </div>
-              <Button className="w-full" onClick={() => quickLogin(DEMO_ACCOUNTS[0])} data-testid="login-submit">
+              <Button className="w-full" onClick={submitLogin} disabled={submitting} data-testid="login-submit">
                 Sign in <ArrowRight className="h-4 w-4" />
               </Button>
             </div>

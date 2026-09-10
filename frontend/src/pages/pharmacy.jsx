@@ -19,16 +19,17 @@ import * as returnSvc from "../services/returnService";
 import * as ref from "../services/referenceService";
 import * as analytics from "../services/analyticsService";
 import { listAlerts } from "../services/alertService";
-import { listRoutes } from "../services/pickupService";
 
-import { Card, Button, Input, Select, Label, Textarea, Badge } from "../components/ui";
+import { Card, Button, Input, Select, Label, Badge } from "../components/ui";
 import {
   KpiCard, KpiSkeleton, PageHeader, SectionTitle, StatusPill, EmptyState,
   LoadingState, HashChain, Stepper, Modal,
 } from "../components/common";
 import QrScanner from "../components/scanner/QrScanner";
+import QrCodeGenerator from "../components/scanner/QrCodeGenerator";
+import PhotoCapture from "../components/scanner/PhotoCapture";
 import LiveMap from "../components/maps/LiveMap";
-import { SmoothLine, RoundedBars, Donut, Heatmap, StackedBars, ChartCard, PALETTE } from "../components/charts";
+import { SmoothLine, RoundedBars, Donut, Heatmap, StackedBars, ChartCard } from "../components/charts";
 import { formatDate, formatDateTime, daysBetween, DEMO_NOW, inr, timeAgo, cn } from "../lib/utils";
 
 const usePid = () => useAuth((s) => s.user?.entityId) || "ph_1";
@@ -203,39 +204,91 @@ const KNOWN = {
   "BATCH-DOX-2026-B04": { drugName: "Doxorubicin 50mg", manufacturerName: "Cipla Ltd.", category: "oncology", drugKey: "DOX", mfg: "2024-12-01", exp: "2026-08-16" },
   "BATCH-CEF-2026-A31": { drugName: "Cefixime 200mg", manufacturerName: "Sun Pharmaceutical Industries", category: "antibiotics", drugKey: "CEF", mfg: "2025-03-01", exp: "2027-02-01" },
 };
+// Auto-generated batch id — a low-literacy retailer never has to invent a
+// code by hand. Format matches the existing convention (`BATCH-{drug}-2026-
+// {short}`) so it reads the same as every scanned/seeded code.
+function genBatchId(drugKey) {
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `BATCH-${drugKey || "GEN"}-2026-${rand}`;
+}
+
 export function InventoryAdd() {
   const pid = usePid();
   const nav = useNavigate();
   const user = useAuth((s) => s.user);
-  const [form, setForm] = useState({ batchId: "", drugName: "", manufacturerName: "", mfg: "", exp: "", quantity: "" });
+  const [form, setForm] = useState({ batchId: "", drugName: "", manufacturerName: "", manufacturerId: "", mfg: "", exp: "", quantity: "50" });
   const [scanned, setScanned] = useState(false);
+  const [registered, setRegistered] = useState(null); // { batchId, drugName } once saved — shows the generated QR
+
+  const { data: drugs } = useQuery({ queryKey: ["drugs"], queryFn: ref.getDrugs, staleTime: Infinity });
+  const { data: manufacturers } = useQuery({ queryKey: ["manufacturers"], queryFn: ref.getManufacturers, staleTime: Infinity });
 
   const onScan = (code) => {
     const k = KNOWN[code];
     setScanned(true);
+    // A scanned code only carries a name/category locally (KNOWN, below) —
+    // unitPrice and manufacturerId are real fields the form must still
+    // send, resolved the same way the manual drug/manufacturer pickers do:
+    // an exact match against real reference data, never a guess.
+    const d = k?.drugKey ? (drugs || []).find((x) => x.key === k.drugKey) : null;
+    const m = k?.manufacturerName ? (manufacturers || []).find((x) => x.name === k.manufacturerName) : null;
     setForm((f) => ({
       ...f, batchId: code,
       drugName: k?.drugName || "", manufacturerName: k?.manufacturerName || "", mfg: k?.mfg || "", exp: k?.exp || "",
       drugKey: k?.drugKey, category: k?.category, quantity: f.quantity || "50",
+      unitPrice: d?.price, manufacturerId: m?.id,
     }));
     toast.success(`Scanned ${code}`);
   };
 
+  // Picking a drug from the list is the friendly path — it fills drug name,
+  // category and unit price on its own; nobody has to know or type them.
+  const onPickDrug = (key) => {
+    const d = (drugs || []).find((x) => x.key === key);
+    if (!d) return;
+    setForm((f) => ({
+      ...f, drugKey: d.key, drugName: d.name, category: d.category, unitPrice: d.price,
+      batchId: f.batchId || genBatchId(d.key),
+    }));
+  };
+  const onPickManufacturer = (id) => {
+    const m = (manufacturers || []).find((x) => x.id === id);
+    if (!m) return;
+    setForm((f) => ({ ...f, manufacturerId: m.id, manufacturerName: m.name }));
+  };
+
   const mut = useAppMutation((payload) => batchSvc.addBatch(payload, { id: pid, name: user?.name, role: "RETAILER" }, pid), {
-    onSuccess: (res) => {
-      if (res.reentry) { toast.error("RE-ENTRY ALERT: this batch was already destroyed. Regulator notified."); nav("/pharmacy/alerts"); }
-      else { toast.success("Batch registered"); nav("/pharmacy/inventory"); }
+    onSuccess: () => { toast.success("Batch registered"); setRegistered({ batchId: form.batchId, drugName: form.drugName }); },
+    onError: (err) => {
+      if (err.code === "BATCH_DESTROYED_REENTRY") { toast.error("RE-ENTRY ALERT: this batch was already destroyed. Regulator notified."); nav("/pharmacy/alerts"); }
+      else toast.error(err.message || "Could not register batch");
     },
   });
 
   const submit = () => {
-    if (!form.batchId || !form.drugName || !form.quantity) { toast.error("Fill batch, drug and quantity"); return; }
+    if (!form.batchId || !form.drugName || !form.quantity || Number(form.quantity) < 1) { toast.error("Pick a drug, then enter a quantity of at least 1"); return; }
     mut.mutate({ ...form, quantity: Number(form.quantity), mfgDate: form.mfg, expiryDate: form.exp });
   };
 
+  // Post-registration: this IS the "barcode generated on the phone" step —
+  // a fresh, scannable QR for the batch just entered, printable right here.
+  if (registered) {
+    return (
+      <div className="mx-auto max-w-md">
+        <PageHeader title="Batch registered" subtitle="Print this label and stick it on the shelf." icon={ShieldCheck} />
+        <Card className="flex flex-col items-center gap-4 py-8">
+          <QrCodeGenerator value={registered.batchId} batchId={registered.batchId} drugName={registered.drugName} size={220} />
+          <Button className="mt-2 w-full" onClick={() => nav("/pharmacy/inventory")} data-testid="qr-done-btn">
+            Done <ArrowRight className="h-4 w-4" />
+          </Button>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div>
-      <PageHeader title="Add stock" subtitle="Scan the batch QR or enter details manually" icon={PlusCircle} />
+      <PageHeader title="Add stock" subtitle="Scan an existing QR, or pick the drug and we'll generate one." icon={PlusCircle} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div>
           <SectionTitle>Scan batch QR</SectionTitle>
@@ -246,20 +299,44 @@ export function InventoryAdd() {
           ]} />
         </div>
         <div>
-          <SectionTitle>{scanned ? "Confirm details" : "Manual entry"}</SectionTitle>
-          <Card className="space-y-3">
-            <div><Label>Batch number</Label><Input value={form.batchId} onChange={(e) => setForm({ ...form, batchId: e.target.value })} placeholder="BATCH-XXX-2026-A00" data-testid="add-batch-id" /></div>
-            <div><Label>Drug name</Label><Input value={form.drugName} onChange={(e) => setForm({ ...form, drugName: e.target.value })} data-testid="add-drug-name" /></div>
-            <div><Label>Manufacturer</Label><Input value={form.manufacturerName} onChange={(e) => setForm({ ...form, manufacturerName: e.target.value })} /></div>
+          <SectionTitle>{scanned ? "Confirm details" : "No code? Pick the drug"}</SectionTitle>
+          <Card className="space-y-4">
+            {!scanned && (
+              <div>
+                <Label>Drug</Label>
+                <Select value={form.drugKey || ""} onChange={(e) => onPickDrug(e.target.value)} data-testid="add-drug-select">
+                  <option value="">Tap to choose…</option>
+                  {(drugs || []).map((d) => <option key={d.key} value={d.key}>{d.name}</option>)}
+                </Select>
+              </div>
+            )}
+            <div>
+              <Label>Manufacturer</Label>
+              <Select value={form.manufacturerId || ""} onChange={(e) => onPickManufacturer(e.target.value)} data-testid="add-manufacturer-select">
+                <option value="">Tap to choose…</option>
+                {(manufacturers || []).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </Select>
+            </div>
+            <div className="flex items-end gap-2">
+              <div className="flex-1"><Label>Batch number</Label><Input value={form.batchId} onChange={(e) => setForm({ ...form, batchId: e.target.value })} placeholder="Auto-filled once you pick a drug" data-testid="add-batch-id" /></div>
+              <Button type="button" variant="soft" onClick={() => setForm((f) => ({ ...f, batchId: genBatchId(f.drugKey) }))} data-testid="generate-batch-id-btn">Generate</Button>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <div><Label>Mfg date</Label><Input type="date" value={form.mfg} onChange={(e) => setForm({ ...form, mfg: e.target.value })} /></div>
               <div><Label>Expiry date</Label><Input type="date" value={form.exp} onChange={(e) => setForm({ ...form, exp: e.target.value })} /></div>
             </div>
-            <div><Label>Quantity (from invoice)</Label><Input type="number" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} data-testid="add-quantity" /></div>
+            <div>
+              <Label>Quantity</Label>
+              <div className="flex items-center gap-2">
+                <button type="button" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-clay-surface text-lg font-bold ring-1 ring-clay-line hover:bg-clay-line" onClick={() => setForm((f) => ({ ...f, quantity: String(Math.max(1, Number(f.quantity || 0) - 10)) }))} data-testid="qty-minus">−</button>
+                <Input type="number" min="1" className="text-center text-lg font-bold" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} data-testid="add-quantity" />
+                <button type="button" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-clay-surface text-lg font-bold ring-1 ring-clay-line hover:bg-clay-line" onClick={() => setForm((f) => ({ ...f, quantity: String(Number(f.quantity || 0) + 10) }))} data-testid="qty-plus">+</button>
+              </div>
+            </div>
             <button className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-clay-line py-4 text-sm text-clay-muted hover:bg-clay-surface" onClick={() => toast.info("Invoice OCR coming soon")}>
               <Camera className="h-4 w-4" /> Photograph invoice (OCR — coming soon)
             </button>
-            <Button className="w-full" onClick={submit} disabled={mut.isPending} data-testid="add-batch-submit">Register batch</Button>
+            <Button className="h-14 w-full text-base" onClick={submit} disabled={mut.isPending} data-testid="add-batch-submit">Register batch</Button>
           </Card>
         </div>
       </div>
@@ -271,6 +348,7 @@ export function InventoryAdd() {
 export function BatchDetail() {
   const { batchId } = useParams();
   const nav = useNavigate();
+  const [qrOpen, setQrOpen] = useState(false);
   const { data: batch, isLoading } = useQuery({ queryKey: ["batch", batchId], queryFn: () => batchSvc.getBatch(batchId) });
 
   const salesSeries = useMemo(() => {
@@ -298,9 +376,15 @@ export function BatchDetail() {
               <Meta k="Quantity" v={`${batch.quantity} / ${batch.initialQuantity}`} />
             </div>
           </div>
-          {canReturn && <Button onClick={() => nav(`/pharmacy/returns/new/${batch.id}`)} data-testid="start-return-btn"><RotateCcw className="h-4 w-4" /> Start Return</Button>}
+          <div className="flex gap-2">
+            <Button variant="soft" onClick={() => setQrOpen(true)} data-testid="reprint-qr-btn"><ShieldCheck className="h-4 w-4" /> Print label</Button>
+            {canReturn && <Button onClick={() => nav(`/pharmacy/returns/new/${batch.id}`)} data-testid="start-return-btn"><RotateCcw className="h-4 w-4" /> Start Return</Button>}
+          </div>
         </div>
       </Card>
+      <Modal open={qrOpen} onClose={() => setQrOpen(false)} title="Batch label" size="sm">
+        <QrCodeGenerator value={batch.id} batchId={batch.id} drugName={batch.drugName} size={200} />
+      </Modal>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <SectionTitle>Event timeline · hash-chained</SectionTitle>
@@ -376,11 +460,11 @@ export function ReturnNew() {
   const [qty, setQty] = useState("");
   const [dist, setDist] = useState("");
   const [reason, setReason] = useState("EXPIRED");
-  const [photo, setPhoto] = useState(false);
+  const [photoHash, setPhotoHash] = useState(null);
 
   React.useEffect(() => { if (batch) setQty(String(batch.quantity)); }, [batch]);
 
-  const mut = useAppMutation(() => returnSvc.createReturn(batchId, { quantity: Number(qty), distributorId: dist, reason, photoHash: "0xstrip" + batchId }, { id: pid, name: user?.name, role: "RETAILER" }), {
+  const mut = useAppMutation(() => returnSvc.createReturn(batchId, { quantity: Number(qty), distributorId: dist, reason, photoHash }, { id: pid, name: user?.name, role: "RETAILER" }), {
     onSuccess: (r) => { toast.success("Return created — tracking live"); nav(`/pharmacy/returns/${r.id}/track`); },
   });
 
@@ -398,11 +482,9 @@ export function ReturnNew() {
       <Card className="space-y-4">
         <div>
           <Label>Photograph the batch strip</Label>
-          <button onClick={() => { setPhoto(true); toast.success("Photo captured (mock)"); }} className={cn("flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed py-6 text-sm transition-colors", photo ? "border-mint bg-mint-soft text-[#1f8a6a]" : "border-clay-line text-clay-muted hover:bg-clay-surface")} data-testid="return-photo">
-            <Camera className="h-5 w-5" /> {photo ? "Photo captured ✓" : "Tap to photograph strip"}
-          </button>
+          <PhotoCapture idleLabel="Tap to photograph strip" onCaptured={setPhotoHash} testId="return-photo" />
         </div>
-        <div><Label>Confirm remaining quantity</Label><Input type="number" value={qty} onChange={(e) => setQty(e.target.value)} data-testid="return-qty" /></div>
+        <div><Label>Confirm remaining quantity</Label><Input type="number" min="1" max={batch.quantity} value={qty} onChange={(e) => setQty(e.target.value)} data-testid="return-qty" /></div>
         <div><Label>Select distributor</Label>
           <Select value={dist} onChange={(e) => setDist(e.target.value)} data-testid="return-distributor">
             <option value="">Choose distributor…</option>
@@ -414,7 +496,7 @@ export function ReturnNew() {
             <option value="EXPIRED">Expired</option><option value="DAMAGED">Damaged</option><option value="RECALL">Recall</option>
           </Select>
         </div>
-        <Button className="w-full" disabled={!dist || mut.isPending} onClick={() => mut.mutate()} data-testid="return-submit">Create return <ArrowRight className="h-4 w-4" /></Button>
+        <Button className="w-full" disabled={!dist || !photoHash || !qty || Number(qty) < 1 || Number(qty) > batch.quantity || mut.isPending} onClick={() => mut.mutate()} data-testid="return-submit">Create return <ArrowRight className="h-4 w-4" /></Button>
       </Card>
     </div>
   );
@@ -481,10 +563,29 @@ export function Sales() {
     else toast.error("Not enough stock");
   };
 
+  // Scan-to-checkout: point the camera (or a demo code) at a batch's QR and
+  // it sells 1 unit immediately — the counterpart to InventoryAdd's
+  // on-phone barcode generation, closing the loop from "generate a code at
+  // entry" to "scan that same code at checkout".
+  const onCheckoutScan = (code) => {
+    const batch = batches.find((b) => b.id === code || b.id === `BATCH-${code}` || b.id.endsWith(code));
+    if (!batch) { toast.error(`No matching stock for ${code}`); return; }
+    setSel(batch.id);
+    record(batch.id, 1);
+  };
+
   return (
     <div>
       <PageHeader title="Sales" subtitle="Record daily sales — inventory updates live" icon={ShoppingCart} />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <Card>
+          <SectionTitle>Scan to checkout</SectionTitle>
+          <QrScanner
+            onScan={onCheckoutScan}
+            height={200}
+            demoCodes={batches.slice(0, 3).map((b) => ({ code: b.id, label: b.drugName }))}
+          />
+        </Card>
         <Card>
           <SectionTitle>Record a sale</SectionTitle>
           <div className="space-y-3">
@@ -493,7 +594,7 @@ export function Sales() {
             <Button className="w-full" disabled={!sel} onClick={() => record(sel, Number(units))} data-testid="record-sale">Record sale</Button>
           </div>
         </Card>
-        <Card className="lg:col-span-2">
+        <Card className="lg:col-span-3">
           <SectionTitle>Quick simulate</SectionTitle>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {batches.slice(0, 8).map((b) => (

@@ -184,11 +184,64 @@ certificates can't be seeded honestly until each phase exists); a demo
 session gets its first alert and notification live, from an actual
 action — re-entry attempt, patient report, or return-flow state change.
 
-The frontend still runs entirely on its own mocked data — nothing in
-`frontend/src/services/*.js` has been pointed at the backend yet. That swap
-is deliberately staged phase by phase (see `BUILDPHASES.md`'s "Frontend
-swap plan"); Phases 1 and 2 built the backend side of the contract without
-editing any frontend file.
+The frontend swap is done. Every function in `frontend/src/services/*.js`
+now calls the real backend — no mock, no `localStorage` fake store,
+`src/services/seed.js` deleted. `src/store/authStore.js` calls the real
+`/api/auth/login` and `/api/auth/demo-login`; `Login.jsx`'s email/password
+fields (previously present but inert) actually authenticate now.
+`src/services/db.js` is a client-side cache bootstrapped by REST on login,
+kept current by a targeted re-fetch after every mutating call, and patched
+live by a real WebSocket connection to `/api/ws` when a message arrives —
+`hooks/useDb.js`'s `useLive` seam needed zero changes, which is exactly
+what it was built for. See `BUILDPHASES.md`'s "Frontend swap plan —
+EXECUTED" for the full file list, the handful of real contract mismatches
+that turned up (and how each was resolved without touching a `pages/*.jsx`
+file), and a backend bug this work found and fixed
+(`batch_status.derive_status` crashed on any real client-supplied
+date-only expiry — seeded data never exercised it).
+
+All nine demo-path steps were walked in a real browser (headless Chromium
+via Playwright, driving a real `npm start` dev server against a real
+`uvicorn` server) end to end, through real login/demo-login — not curl,
+not the mock. Confirmed live in-browser: single-batch registration, the
+return flow, the dispute gate firing on a genuine quantity mismatch and
+blocking `forward` until resolved, certificate upload flipping a batch to
+`DESTROYED`, re-entry detection firing a real alert the regulator dashboard
+picks up, and the public `/verify` route (logged out, no account)
+correctly rendering the red "DO NOT USE" verdict for a destroyed batch.
+Also confirmed live: a single-flight silent token refresh recovers a
+corrupted/expired access token without dropping the user's session; a
+logged-out refresh token genuinely fails on reuse; a wrong-role token gets
+a real 403; and all six routes (`/pharmacy`, `/distributor`, `/agent`,
+`/manufacturer`, `/regulator`, `/verify`) load with zero real console
+errors.
+
+**Update — live WebSocket push is now real and verified, not just
+degraded-gracefully.** A real Redis is running locally (`backend/.env`'s
+`REDIS_URL` points at it) and a genuine, serious bug in
+`core/realtime.py` — the pub/sub fan-out silently dropped every message
+even with Redis fully working, a `redis.asyncio` PubSub single-task-owner
+violation — was found and fixed. Vehicle GPS positions now tick live over
+the WebSocket (confirmed: a dispatched route's position frames arriving
+in real time, genuinely moving), and a 50-connection load test against a
+real re-entry-triggered alert delivered to all 50 clients in under 0.7s.
+Full account in `BUILDPHASES.md`'s "Round 2" section and
+`ARCHITECTURE.md` §11. The app still degrades cleanly to
+REST-refresh-after-mutation if Redis isn't reachable (unchanged, still
+correct) — that path is just no longer the only one that's been proven to
+work.
+
+Also wired in this round: real photo capture (`POST /api/uploads/photo`)
+in both return-flow photo steps — the pharmacy's strip photo and the
+distributor's received-goods photo are real uploaded images with a real
+server-computed hash now, not placeholder strings, and both flows require
+one before submitting. The `addBatch`/`uploadCertificate` response-shape
+mismatches from the first pass are resolved by correcting the two stale
+table entries in `ARCHITECTURE.md` (the backend's real 409s were already
+right) rather than carrying a frontend shim; `InventoryAdd`'s missing
+`unitPrice`/`manufacturerId` fields are resolved by the form actually
+collecting them (real drug/manufacturer pickers) instead of a
+service-layer guess.
 
 ## Demo batch codes
 

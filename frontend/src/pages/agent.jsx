@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Play, MapPin, Phone, CheckCircle2, Camera, ArrowRight, Navigation, History as HistoryIcon, User } from "lucide-react";
+import { Play, MapPin, Phone, CheckCircle2, Camera, ArrowRight, Navigation, History as HistoryIcon } from "lucide-react";
 import { useAuth } from "../store/authStore";
 import { useLive } from "../hooks/useDb";
 import * as pickupSvc from "../services/pickupService";
@@ -141,7 +141,7 @@ export function Profile() {
       <h1 className="mb-4 text-2xl font-extrabold text-clay-ink">Profile</h1>
       <Card className="flex items-center gap-4">
         <span className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-accent text-2xl font-bold text-white">{agent.name[0]}</span>
-        <div><div className="text-lg font-bold text-clay-ink">{agent.name}</div><div className="text-sm text-clay-muted">{agent.phone}</div><StatusPill status={agent.status} /></div>
+        <div><div className="text-lg font-bold text-clay-ink">{agent.name}</div><div className="text-sm text-clay-muted">{agent.phone}{user?.email ? ` · ${user.email}` : ""}</div><StatusPill status={agent.status} /></div>
       </Card>
     </div>
   );

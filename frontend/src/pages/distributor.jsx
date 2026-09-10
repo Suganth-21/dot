@@ -1,11 +1,11 @@
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Truck, Inbox as InboxIcon, AlertTriangle, Send, CheckCircle2, Phone, MapPin,
-  Route as RouteIcon, TrendingUp, ShieldAlert, Camera, ChevronRight, Building2, Users, GripVertical,
+  Route as RouteIcon, TrendingUp, ShieldAlert, Camera, ChevronRight, Building2, GripVertical,
 } from "lucide-react";
 
 import { useAuth } from "../store/authStore";
@@ -17,10 +17,11 @@ import * as ref from "../services/referenceService";
 import * as analytics from "../services/analyticsService";
 
 import { Card, Button, Input, Select, Label, Textarea, Badge } from "../components/ui";
-import { KpiCard, KpiSkeleton, PageHeader, SectionTitle, StatusPill, EmptyState, LoadingState, Stepper } from "../components/common";
+import { KpiCard, KpiSkeleton, PageHeader, SectionTitle, StatusPill, EmptyState, LoadingState } from "../components/common";
 import LiveMap from "../components/maps/LiveMap";
-import { SmoothLine, RoundedBars, FunnelCard, ChartCard, MultiLine } from "../components/charts";
-import { formatDate, formatDateTime, cn, inr } from "../lib/utils";
+import PhotoCapture from "../components/scanner/PhotoCapture";
+import { SmoothLine, RoundedBars, FunnelCard, ChartCard } from "../components/charts";
+import { formatDate, cn } from "../lib/utils";
 
 const useDid = () => useAuth((s) => s.user?.entityId) || "dist_1";
 
@@ -173,11 +174,11 @@ export function ReturnDetail() {
   const [received, setReceived] = useState("");
   const [notes, setNotes] = useState("");
   const [resolution, setResolution] = useState("");
-  const [photo, setPhoto] = useState(false);
+  const [photoHash, setPhotoHash] = useState(null);
 
   React.useEffect(() => { if (ret && ret.quantityReceived != null) setReceived(String(ret.quantityReceived)); }, [ret]);
 
-  const recvMut = useAppMutation(() => returnSvc.distributorReceive(returnId, { quantityReceived: Number(received), photoHash: "0xdist", notes }), {
+  const recvMut = useAppMutation(() => returnSvc.distributorReceive(returnId, { quantityReceived: Number(received), photoHash: photoHash || ret.distributorPhotoHash, notes }), {
     onSuccess: (r) => { r.dispute ? toast.error("Quantity dispute — chain halted") : toast.success("Confirmed — ready to forward"); },
   });
   const resolveMut = useAppMutation(() => returnSvc.resolveDispute(returnId, resolution), {
@@ -217,14 +218,18 @@ export function ReturnDetail() {
         {/* Distributor received */}
         <Card>
           <SectionTitle>Distributor received</SectionTitle>
-          <button onClick={() => { setPhoto(true); toast.success("Photo captured"); }} className={cn("mb-3 flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed py-6 text-sm", photo || ret.distributorPhotoHash ? "border-mint bg-mint-soft text-[#1f8a6a]" : "border-clay-line text-clay-muted hover:bg-clay-surface")}>
-            <Camera className="h-5 w-5" /> {photo || ret.distributorPhotoHash ? "Photo captured ✓" : "Photograph received goods"}
-          </button>
+          {isConfirmed || isForwarded || ret.distributorPhotoHash ? (
+            <div className="mb-3 flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-mint bg-mint-soft py-6 text-sm text-[#1f8a6a]">
+              <Camera className="h-5 w-5" /> Photo captured ✓
+            </div>
+          ) : (
+            <PhotoCapture idleLabel="Photograph received goods" onCaptured={setPhotoHash} testId="distributor-received-photo" className="mb-3" />
+          )}
           <Label>Received quantity</Label>
           <Input type="number" value={received} onChange={(e) => setReceived(e.target.value)} disabled={isConfirmed || isForwarded} data-testid="received-qty" />
           <div className="mt-3"><Label>Notes</Label><Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} disabled={isConfirmed || isForwarded} /></div>
           {!isConfirmed && !isForwarded && !isDispute && (
-            <Button className="mt-3 w-full" disabled={!received || recvMut.isPending} onClick={() => recvMut.mutate()} data-testid="save-received">Save & check</Button>
+            <Button className="mt-3 w-full" disabled={!received || !photoHash || recvMut.isPending} onClick={() => recvMut.mutate()} data-testid="save-received">Save & check</Button>
           )}
         </Card>
       </div>
@@ -306,7 +311,8 @@ export function PickupNew() {
     const out = [];
     let cur = { lat: warehouse.lat, lng: warehouse.lng };
     while (pool.length) {
-      pool.sort((a, b) => (Math.hypot(a.lat - cur.lat, a.lng - cur.lng)) - (Math.hypot(b.lat - cur.lat, b.lng - cur.lng)));
+      const from = cur; // captured per-iteration — the comparator below must not close over the loop-mutated `cur` itself
+      pool.sort((a, b) => (Math.hypot(a.lat - from.lat, a.lng - from.lng)) - (Math.hypot(b.lat - from.lat, b.lng - from.lng)));
       const next = pool.shift(); out.push(next); cur = next;
     }
     setSel(out.map((p) => p.returnId));

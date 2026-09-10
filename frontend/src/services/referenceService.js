@@ -1,36 +1,40 @@
-import { getState } from "./db";
-
-const delay = (ms = 80) => new Promise((r) => setTimeout(r, ms));
+import { apiGet } from "../lib/api";
 
 export async function getDistributors() {
-  await delay();
-  return getState().distributors.map((d) => ({ ...d }));
+  return apiGet("/reference/distributors");
 }
 export async function getManufacturers() {
-  await delay();
-  return getState().manufacturers.map((m) => ({ ...m }));
+  return apiGet("/reference/manufacturers");
 }
 export async function getFacilities() {
-  await delay();
-  return getState().facilities.map((f) => ({ ...f }));
+  return apiGet("/reference/facilities");
 }
 export async function getPharmacies() {
-  await delay();
-  return getState().pharmacies.map((p) => ({ ...p }));
+  return apiGet("/reference/pharmacies");
 }
 export async function getPharmacy(id) {
-  await delay();
-  return getState().pharmacies.find((p) => p.id === id);
+  return apiGet(`/reference/pharmacies/${id}`);
 }
 export async function getSales(pharmacyId) {
-  await delay();
-  return getState().sales.filter((s) => s.pharmacyId === pharmacyId).map((s) => ({ ...s }));
+  // ARCHITECTURE.md §8.8 documents `GET /api/sales?pharmacyId=`, but the
+  // backend never implemented it (no route registered — confirmed against
+  // app/api/__init__.py) and no page calls this function today. Left as the
+  // documented contract call rather than silently reshaped; see the final
+  // integration report for how pages/pharmacy.jsx's Sales history is served
+  // instead (derived client-side from batch events in services/db.js).
+  return apiGet(`/sales?pharmacyId=${encodeURIComponent(pharmacyId)}`);
 }
 export async function getAgents(distributorId) {
-  await delay();
-  return getState().agents.filter((a) => !distributorId || a.distributorId === distributorId).map((a) => ({ ...a }));
+  return apiGet(`/reference/agents${distributorId ? `?distributorId=${encodeURIComponent(distributorId)}` : ""}`);
 }
 export async function getVehicles(distributorId) {
-  await delay();
-  return getState().vehicles.filter((v) => !distributorId || v.distributorId === distributorId).map((v) => ({ ...v }));
+  return apiGet(`/reference/vehicles${distributorId ? `?distributorId=${encodeURIComponent(distributorId)}` : ""}`);
+}
+
+// Additive — not in the original mock contract, but a real, unrestricted,
+// read-only endpoint (`GET /api/reference/drugs`). Used to drive a proper
+// drug picker on the retail-entry form instead of free-text, so a
+// low-literacy user never has to type a category or a price by hand.
+export async function getDrugs() {
+  return apiGet("/reference/drugs");
 }

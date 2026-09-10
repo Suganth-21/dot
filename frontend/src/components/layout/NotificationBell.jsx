@@ -6,11 +6,14 @@ import { useLive } from "../../hooks/useDb";
 import { markAllRead, markRead } from "../../services/notificationService";
 import { timeAgo, cn } from "../../lib/utils";
 
-const KIND = {
-  info: "bg-accent-soft text-accent-ink",
-  warning: "bg-amber2-soft text-amber2",
-  danger: "bg-rose2-soft text-rose2",
-  success: "bg-mint-soft text-mint",
+// Unread-dot color by severity — a re-entry alert (danger) should read
+// differently at a glance from a routine info notification, not just by
+// its text.
+const KIND_DOT = {
+  info: "bg-accent",
+  warning: "bg-amber2",
+  danger: "bg-rose2",
+  success: "bg-mint",
 };
 
 export default function NotificationBell({ role }) {
@@ -54,7 +57,7 @@ export default function NotificationBell({ role }) {
                     onClick={() => { markRead(role, n.id); if (n.link) { nav(n.link); setOpen(false); } }}
                     className={cn("flex w-full gap-3 border-b border-clay-line/60 px-4 py-3 text-left hover:bg-clay-surface transition-colors", !n.read && "bg-accent-soft/30")}
                   >
-                    <span className={cn("mt-0.5 h-2 w-2 shrink-0 rounded-full", n.read ? "bg-transparent" : "bg-accent")} />
+                    <span className={cn("mt-0.5 h-2 w-2 shrink-0 rounded-full", n.read ? "bg-transparent" : (KIND_DOT[n.kind] || "bg-accent"))} />
                     <span className="flex-1">
                       <span className="flex items-center justify-between gap-2">
                         <span className="text-sm font-semibold text-clay-ink">{n.title}</span>

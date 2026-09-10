@@ -35,6 +35,7 @@ const STATUS_MAP = {
   high: { tone: "amber", label: "High" },
   medium: { tone: "lilac", label: "Medium" },
   low: { tone: "gray", label: "Low" },
+  QUANTITY_CAP: { tone: "rose", label: "Quantity Cap Breach" },
 };
 
 export function StatusPill({ status, className }) {

@@ -1417,7 +1417,7 @@ Legend: **A** = authenticated, **P** = public, role in brackets.
 | `listBatches()` | `GET /api/batches` **A** | Scoped by role per §6.5. Supports `?pharmacyId=&manufacturerId=&status=&q=&limit=&offset=`. Returns `Batch[]` **including** `events[]`. |
 | `getBatch(id)` | `GET /api/batches/{id}` **A** | Accepts id **or** code. Returns `Batch` with ordered `events[]`, or 404. |
 | `searchAll(q)` | `GET /api/search?q=` **A** | `[{type:"batch"\|"pharmacy", id, title, subtitle, status}]`, max 12. |
-| `addBatch(payload, actor, pharmacyId)` | `POST /api/batches` **A** [RETAILER] | Body `{batchId, drugName, drugKey, category, unitPrice, manufacturerId, manufacturerName, mfgDate, expiryDate, quantity}`. Returns `{reentry, batch, alert?, quantityCapBreach?}`. |
+| `addBatch(payload, actor, pharmacyId)` | `POST /api/batches` **A** [RETAILER] | Body `{batchId, drugName, drugKey, category, unitPrice, manufacturerId, manufacturerName, mfgDate, expiryDate, quantity}`. On success, `200 {reentry: false, batch, alert?, quantityCapBreach?}`. Re-registering an already-`DESTROYED` batch id is `409 BATCH_DESTROYED_REENTRY` (`details.alert` carries the raised alert) — a genuine domain-rule refusal per §10, not a soft `reentry: true` 200 (an earlier version of this table said otherwise; corrected here to match `batch_service.register_batch`, which has always raised). A duplicate id that isn't destroyed is `409 BATCH_ALREADY_EXISTS`. |
 | `simulateSale(batchId, units, actor)` | `POST /api/batches/{id}/sale` **A** [RETAILER] | Body `{units}`. Returns updated `Batch` or 409 `INSUFFICIENT_STOCK`. |
 | *(new)* | `GET /api/batches/{id}/verify-chain` **A** [REGULATOR] | `{valid, brokenAtSequence, checked}`. |
 
@@ -1457,7 +1457,7 @@ screen.
 | `listInbox(manufacturerId)` | `GET /api/manufacturer/inbox` **A** [MANUFACTURER] | `FORWARDED` returns whose batch belongs to this manufacturer and is not `DESTROYED`, batch joined. |
 | `scheduleFacility(batchIds, facilityId, date, actor)` | `POST /api/manufacturer/schedule` **A** [MANUFACTURER] | Body `{batchIds, facilityId, date}`. `FACILITY_SCHEDULED` event per batch. |
 | `certEligibility(batch)` | `GET /api/batches/{id}/cert-eligibility` **A** [MANUFACTURER] | `{eligible, reason?}`. **Called during render today** — it is sync and pure in the mock. Keep the frontend computing it locally from the batch's `events[]`, and use this endpoint as the authoritative pre-check. The real enforcement is inside the upload endpoint regardless. |
-| `uploadCertificate(batchId, {certId, fileName}, actor)` | `POST /api/manufacturer/certificates` **A** [MANUFACTURER] | Body `{batchId, certId, fileName}` (`multipart/form-data` once real PDFs land). Returns `{ok, batch, coveredBatches}` or `{ok: false, reason}`. |
+| `uploadCertificate(batchId, {certId, fileName}, actor)` | `POST /api/manufacturer/certificates` **A** [MANUFACTURER] | Body `{batchId, certId, fileName}` (plain JSON — no real PDF storage exists yet, see the cut list). On success, `200 {ok: true, batch, coveredBatches}`. Every ineligibility is a real `409` (`ALREADY_DESTROYED`, `NOT_DISTRIBUTOR_CONFIRMED`, `NOT_FORWARDED`, or `CHAIN_HALTED_DISPUTE`) — a genuine domain-rule refusal per §10, not a soft `{ok: false, reason}` 200 (an earlier version of this table said otherwise; corrected here to match `manufacturer_service._assert_cert_eligible`, which has always raised). |
 
 ### 8.6 Alerts and reports — `alertService.js`
 
@@ -1689,3 +1689,121 @@ difference between the certificate-blocked banner and a form validation message.
 exception handler. A service raises a domain error; it never constructs an
 `HTTPException`. Every 5xx is logged with the request id, the user id, and the
 operation — and never with a password, token, or private key.
+
+---
+
+## 11. Frontend integration implementation notes
+
+Recorded here, in the style of §6.7, so nobody has to rediscover this by
+reading diffs. This is the record of what actually happened when
+`frontend/src/services/*.js` was pointed at this contract for real — see
+`BUILDPHASES.md`'s "Frontend swap plan — EXECUTED" for the file-by-file
+list and `CONTEXT.md` for the current state summary.
+
+- **Two documented response shapes didn't match what the service layer
+  actually does — RESOLVED by correcting the docs, not the backend.**
+  §8.2 documented `addBatch` returning a 200 `{reentry: true, alert,
+  batch}` for a destroyed-batch re-registration; §8.5 documented
+  `uploadCertificate` returning a 200 `{ok: false, reason}` for an
+  ineligible upload. Both were wrong about the *backend* —
+  `batch_service.register_batch` and `manufacturer_service.
+  _assert_cert_eligible` have always raised real 409s for these cases
+  (`BATCH_DESTROYED_REENTRY`; `NOT_DISTRIBUTOR_CONFIRMED`/
+  `NOT_FORWARDED`/`ALREADY_DESTROYED`/`CHAIN_HALTED_DISPUTE`), and §10's
+  own error-code table already lists exactly these as 409 examples —
+  `UploadCertificateResponse`'s non-optional `batch`/`covered_batches`
+  fields can't even represent the soft-failure shape §8.5 described. A
+  first pass shimmed this at the frontend service boundary (catching the
+  specific codes and translating them back to the documented 200). That
+  shim is gone: §8.2 and §8.5 above are now corrected to describe the real
+  409s, `batchService.addBatch`/`manufacturerService.uploadCertificate`
+  are plain pass-throughs again, and the two page consumers
+  (`pages/pharmacy.jsx`'s `InventoryAdd`, `pages/manufacturer.jsx`'s
+  `CertUpload`) each gained an `onError` handler on their mutation doing
+  what the old 200-branch used to. Backend-shape-change was the other
+  option and was deliberately not taken — the backend was already right;
+  the tables were the stale half.
+
+- **`GET /api/sales?pharmacyId=`** (§8.8) is documented but was never
+  routed (`app/api/__init__.py` never includes a sales router). Not a
+  behavioral gap in practice — `referenceService.getSales`, the frontend
+  function that would call it, has no callers anywhere in the app, mock or
+  real. `pages/pharmacy.jsx`'s Sales page reads a `sales` array via
+  `useLive`, which the frontend's cache layer (`services/db.js`) now
+  derives from each fetched batch's own `SALE`-type `events[]` instead —
+  data `GET /api/batches` already returns. Either add the route to match
+  the documented contract, or update §8.8 to drop it — human call.
+
+- **`batch_status.derive_status` (§5.1) assumed a timezone-aware
+  `expiry_date` on every call.** True for every seeded batch (the seed
+  script always constructs timezone-aware Python `datetime`s) but not true
+  for a batch registered through the real HTTP layer with a date-only
+  `expiryDate` — `pages/pharmacy.jsx`'s add-stock form uses
+  `<input type="date">`, which Pydantic parses as timezone-*naive*.
+  Subtracting that from `DEMO_NOW` (always timezone-*aware*, per §4.10)
+  raised `TypeError: can't subtract offset-naive and offset-aware
+  datetimes` on every real registration — a 500 that also happened to
+  reach the browser without CORS headers, which Chrome then reports as a
+  CORS failure rather than a server error, so this one is worth
+  recognizing by its misleading symptom as much as its real one. Fixed by
+  comparing `expiry_date.date()` against `now.date()` — whole calendar
+  days, matching what "days to expiry" already means everywhere else
+  (including the frontend's own `Math.round(… / 86400000)`), and
+  correct regardless of either side's timezone-awareness. This was a
+  correctness bug with no relation to any domain rule, so it was fixed
+  directly rather than raised as a decision — see `BUILDPHASES.md`'s
+  "Bugs found and fixed" for the full account.
+
+- **`InventoryAdd`'s form was missing two fields `RegisterBatchRequest`
+  requires — RESOLVED by growing the form, not the service layer.**
+  `pages/pharmacy.jsx`'s add-stock form — scanned or manually typed —
+  never populated `unitPrice` or `manufacturerId`. A first pass resolved
+  this in `batchService.addBatch` (a lookup against reference data by
+  `drugKey`/name). That workaround is gone: the form now has real drug and
+  manufacturer `<Select>` pickers backed by `GET /api/reference/drugs` and
+  `getManufacturers()`, and choosing either sets `unitPrice`/`category`/
+  `drugKey`/`manufacturerId` directly — real, visible, user-chosen values.
+  `batchService.addBatch` is a plain pass-through again.
+
+- **§9.5's "a WebSocket-backed client store" undersold what `db.js`
+  actually needed to be.** In practice it's a REST-bootstrapped cache,
+  kept current by a `refreshX()` re-fetch after every mutating service
+  call (there is no local optimistic state left to mutate — the server is
+  the only writer now), *additionally* patched live by WebSocket pushes
+  when they arrive. Every `useLive` call site is untouched either way —
+  this is a fuller description of the seam's actual job, not a contract
+  change.
+
+- **§9.6's 30s ping/pong heartbeat has no server half to answer it.**
+  `app/api/ws.py`'s receive loop recognizes only `subscribe`/
+  `unsubscribe`; there is no server-initiated ping and no handler for an
+  app-level pong. The frontend implements a connect-time watchdog instead
+  (a socket answering nothing at all — not even a subscribe ack — within
+  45s is closed and rebuilt) rather than a literal heartbeat the backend
+  doesn't participate in. Add a real ping/pong to `ws.py`, or update §9.6
+  to describe the watchdog as the permanent design — human call.
+
+- **Live WebSocket push — RESOLVED. A real, serious bug was found and
+  fixed in `core/realtime.py`; push is now confirmed working end to end.**
+  Round 1 verified only the structural half (connect, subscribe, ack) with
+  no Redis available. Round 2 sourced a real Redis (a standalone Windows
+  build, no Docker/WSL on this machine), pointed `REDIS_URL` at it, and
+  found the realtime layer was *still* completely broken: `redis-cli
+  PSUBSCRIBE` confirmed every message genuinely reached Redis, but zero
+  reached any WebSocket client. Root cause: `redis.asyncio`'s `PubSub` is
+  only safe to read from and mutate from a single task, and
+  `subscribe_local` was calling `self._pubsub.subscribe()` directly from
+  the WebSocket handler's task while `_listen()` concurrently iterated the
+  same object in a different task — verified in isolation against real
+  Redis before touching the fix. Rewritten so only `_listen()` ever
+  touches `self._pubsub` (subscribe/unsubscribe requests are queued and
+  awaited via a future `_listen()` resolves), and `_listen()` subscribes
+  to a keepalive channel before its read loop starts (a PubSub with zero
+  subscriptions never picks up a later concurrent subscribe — also
+  verified in isolation). Confirmed fixed against the real path: a
+  dispatched route's GPS position arrived as live frames over a real
+  WebSocket, and the project's own `backend/scripts/ws_load_test.py` — 50
+  concurrent connections, a real re-entry-triggered alert publish — hit
+  50/50 delivered, max 0.69s, inside the 2s requirement. Full account,
+  including the isolated repro that proved the root cause, in
+  `BUILDPHASES.md`'s "Round 2" section.

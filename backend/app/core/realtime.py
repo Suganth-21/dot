@@ -16,6 +16,27 @@ dependency diagram places `core` (crypto, errors, rbac, realtime) beside
 to query batch/route/return ownership) lives in
 `app.services.realtime_service` instead; this module is pure pub/sub
 mechanism.
+
+**Single-task ownership of the redis-py PubSub object.** `redis.asyncio`'s
+`PubSub` is only safe to read from and mutate (subscribe/unsubscribe) from
+one task at a time — calling `.subscribe()` from a WebSocket handler's task
+while a *different* task is concurrently iterating `.listen()` (or polling
+`.get_message()`) silently breaks delivery: the subscribe confirmation and
+the read loop race for the same connection, and once that happens the read
+loop never yields another message, subscribed or not. This was verified
+empirically against a real Redis instance (not a theoretical concern — the
+original implementation called `self._pubsub.subscribe()` directly from
+`subscribe_local`, which is exactly the caller's task, not `_listen()`'s;
+every message published while the app was running was confirmed arriving
+at Redis via `redis-cli PSUBSCRIBE`, and zero of them ever reached a
+WebSocket client). The fix: `subscribe_local`/`unsubscribe_local` never
+touch `self._pubsub` directly. They enqueue a request onto `_sub_queue`
+and await a future that `_listen()` — the *only* task that ever calls
+`.subscribe()`, `.unsubscribe()`, or `.get_message()` — resolves once the
+request is actually applied. `_listen()` also subscribes to a harmless
+keepalive channel before starting its read loop, since `get_message()` on
+a PubSub with zero subscriptions never establishes a connection for a
+later subscribe to attach to.
 """
 from __future__ import annotations
 
@@ -31,6 +52,13 @@ from fastapi import WebSocket
 from app.config import get_settings
 
 logger = logging.getLogger("dot.realtime")
+
+_KEEPALIVE_CHANNEL = "__hub_keepalive__"
+# How often _listen() re-checks _sub_queue while otherwise blocked in
+# get_message() — bounds worst-case subscribe-to-first-message latency.
+# ARCHITECTURE.md §9.1's "~2-second re-entry alert" demo requirement has
+# ample headroom above this.
+_POLL_TIMEOUT_S = 0.25
 
 
 def _now_iso() -> str:
@@ -52,6 +80,8 @@ class RealtimeHub:
         self._pubsub: Any = None
         self._local_subscribers: dict[str, set[WebSocket]] = {}
         self._listen_task: asyncio.Task | None = None
+        # (action, channel, future) — drained exclusively inside _listen().
+        self._sub_queue: asyncio.Queue[tuple[str, str, asyncio.Future]] = asyncio.Queue()
 
     @property
     def enabled(self) -> bool:
@@ -63,6 +93,11 @@ class RealtimeHub:
             return
         self._redis = redis_asyncio.from_url(self._redis_url, decode_responses=True)
         self._pubsub = self._redis.pubsub()
+        # Establishes the pubsub connection before _listen() starts polling
+        # it — see the module docstring for why this specific ordering
+        # matters. Never published to; exists purely to give get_message()
+        # something to hold open.
+        await self._pubsub.subscribe(_KEEPALIVE_CHANNEL)
         self._listen_task = asyncio.create_task(self._listen())
         logger.info("realtime hub started")
 
@@ -85,13 +120,22 @@ class RealtimeHub:
         envelope = {"type": msg_type, "channel": channel, "ts": _now_iso(), "data": data}
         await self._redis.publish(channel, json.dumps(envelope, default=str))
 
+    async def _request(self, action: str, channel: str) -> None:
+        """Enqueues a subscribe/unsubscribe for `_listen()` to actually
+        perform, and waits for it to confirm — so a caller awaiting
+        `subscribe_local` (ws.py sends its "subscribed" ack right after)
+        never races ahead of the real Redis subscription completing."""
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        await self._sub_queue.put((action, channel, future))
+        await future
+
     async def subscribe_local(self, channel: str, ws: WebSocket) -> None:
         if not self.enabled:
             return
         is_new = channel not in self._local_subscribers
         self._local_subscribers.setdefault(channel, set()).add(ws)
         if is_new:
-            await self._pubsub.subscribe(channel)
+            await self._request("subscribe", channel)
 
     async def unsubscribe_local(self, channel: str, ws: WebSocket) -> None:
         if not self.enabled:
@@ -102,22 +146,44 @@ class RealtimeHub:
         subs.discard(ws)
         if not subs:
             del self._local_subscribers[channel]
-            await self._pubsub.unsubscribe(channel)
+            await self._request("unsubscribe", channel)
 
     def drop_connection(self, ws: WebSocket) -> None:
         """Called once on disconnect rather than per-channel — cheaper than
         an unsubscribe round trip per subscription when a socket just
-        dropped."""
+        dropped. Best-effort on the Redis side: enqueued without waiting,
+        since nothing is blocked on this cleanup completing."""
         for channel in list(self._local_subscribers.keys()):
-            self._local_subscribers[channel].discard(ws)
-            if not self._local_subscribers[channel]:
+            subs = self._local_subscribers[channel]
+            subs.discard(ws)
+            if not subs and self.enabled:
                 del self._local_subscribers[channel]
+                future: asyncio.Future = asyncio.get_event_loop().create_future()
+                self._sub_queue.put_nowait(("unsubscribe", channel, future))
 
     async def _listen(self) -> None:
         assert self._pubsub is not None
         try:
-            async for message in self._pubsub.listen():
-                if message.get("type") != "message":
+            while True:
+                # Every subscribe/unsubscribe touching self._pubsub happens
+                # right here, in this task — never in subscribe_local's
+                # caller's task. See the module docstring.
+                while not self._sub_queue.empty():
+                    action, channel, future = self._sub_queue.get_nowait()
+                    try:
+                        if action == "subscribe":
+                            await self._pubsub.subscribe(channel)
+                        else:
+                            await self._pubsub.unsubscribe(channel)
+                        if not future.done():
+                            future.set_result(None)
+                    except Exception as exc:  # noqa: BLE001 — must not crash the listen loop
+                        if not future.done():
+                            future.set_exception(exc)
+                        logger.exception("realtime subscribe request failed action=%s channel=%s", action, channel)
+
+                message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=_POLL_TIMEOUT_S)
+                if message is None:
                     continue
                 channel = message["channel"]
                 payload = message["data"]

@@ -1,68 +1,23 @@
-import { getState, mutate, emit } from "./db";
-import { uid } from "../lib/utils";
-
-const delay = (ms = 120) => new Promise((r) => setTimeout(r, ms));
-
-const notifStore = () => getState().notifications;
-
-export function notify(role, title, body, kind = "info", link) {
-  const s = getState();
-  if (!s.notifications[role]) s.notifications[role] = [];
-  s.notifications[role].unshift({ id: uid("ntf"), title, body, kind, link, ts: new Date().toISOString(), read: false });
-  s.notifications[role] = s.notifications[role].slice(0, 40);
-}
+import { apiGet, apiPatch } from "../lib/api";
+import { patchNotificationsRead } from "./db";
 
 export async function getNotifications(role) {
-  await delay(50);
-  return (notifStore()[role] || []).map((n) => ({ ...n }));
+  return apiGet(`/notifications?role=${encodeURIComponent(role)}`);
 }
 
 export async function markAllRead(role) {
-  mutate((s) => {
-    (s.notifications[role] || []).forEach((n) => (n.read = true));
-  });
+  patchNotificationsRead(role); // optimistic — instant bell update
+  return apiPatch(`/notifications/read-all?role=${encodeURIComponent(role)}`, {});
 }
 
 export async function markRead(role, id) {
-  mutate((s) => {
-    const n = (s.notifications[role] || []).find((x) => x.id === id);
-    if (n) n.read = true;
-  });
+  patchNotificationsRead(role, id); // optimistic — instant bell update
+  return apiPatch(`/notifications/${encodeURIComponent(id)}/read`, {});
 }
 
-// Interval-based live notification simulation
-const TICKS = {
-  RETAILER: [
-    ["Sale recorded", "2 units of Atorvastatin sold", "success"],
-    ["Expiry reminder", "3 batches enter their 30-day window", "warning"],
-  ],
-  DISTRIBUTOR: [
-    ["Vehicle update", "TN 11 AB reached stop 4 of 7", "info"],
-    ["Confirmation pending", "1 return awaiting your receipt check", "warning"],
-  ],
-  MANUFACTURER: [
-    ["Facility slot open", "EnviroSafe has a pickup slot tomorrow", "info"],
-    ["Compliance nudge", "2 batches near their 30-day closure window", "warning"],
-  ],
-  REGULATOR: [
-    ["Route update", "Active pickup routes: 2 vehicles moving", "info"],
-    ["Alert digest", "No new critical alerts in the last hour", "info"],
-  ],
-  PICKUP_AGENT: [["Reminder", "Mark arrival when you reach each stop", "info"]],
-};
-
-let started = false;
-export function startNotificationSim() {
-  if (started) return;
-  started = true;
-  let i = 0;
-  setInterval(() => {
-    const roles = Object.keys(TICKS);
-    const role = roles[i % roles.length];
-    const pool = TICKS[role];
-    const item = pool[Math.floor(Math.random() * pool.length)];
-    notify(role, item[0], item[1], item[2]);
-    emit();
-    i++;
-  }, 15000);
-}
+// The client-side fake-notification generator is gone — notifications are
+// server-created only, and the live feed now arrives via WebSocket
+// `notification.created` (services/db.js). The export is kept as a no-op
+// purely so App.js (not a services/*.js file in BUILDPHASES.md's table,
+// and outside this task's edit list) doesn't need to drop its call site.
+export function startNotificationSim() {}

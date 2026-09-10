@@ -1,37 +1,20 @@
-import { getState, mutate } from "./db";
-import { appendEvent } from "./batchService";
-import { notify } from "./notificationService";
-
-const delay = (ms = 120) => new Promise((r) => setTimeout(r, ms));
+import { apiGet, apiPost } from "../lib/api";
+import { refreshBatches } from "./db";
 
 export async function listInbox(manufacturerId) {
-  await delay();
-  const s = getState();
-  // returns forwarded whose batch belongs to this manufacturer & not yet scheduled/destroyed
-  return s.returns
-    .filter((r) => r.status === "FORWARDED")
-    .map((r) => {
-      const batch = s.batches.find((b) => b.id === r.batchId);
-      return { ...r, batch };
-    })
-    .filter((r) => r.batch && (!manufacturerId || r.batch.manufacturerId === manufacturerId) && r.batch.status !== "DESTROYED");
+  return apiGet("/manufacturer/inbox");
 }
 
 export async function scheduleFacility(batchIds, facilityId, date, actor) {
-  await delay();
-  mutate((s) => {
-    const fac = s.facilities.find((f) => f.id === facilityId);
-    batchIds.forEach((id) => {
-      const batch = s.batches.find((b) => b.id === id);
-      if (!batch) return;
-      batch.scheduledFacility = { id: facilityId, name: fac?.name, date };
-      appendEvent(batch, "FACILITY_SCHEDULED", actor, { facility: fac?.name, date });
-    });
-  });
-  return { ok: true };
+  const res = await apiPost("/manufacturer/schedule", { batchIds, facilityId, date });
+  await refreshBatches();
+  return res;
 }
 
-// Certificate binding enforcement: cannot upload unless distributor-confirmed & forwarded.
+// Certificate binding enforcement: cannot upload unless distributor-
+// confirmed & forwarded. Stays a local pure pre-check over `batch.events`
+// (BUILDPHASES.md — "called during render today"); the real enforcement is
+// inside uploadCertificate below regardless.
 export function certEligibility(batch) {
   if (!batch) return { eligible: false, reason: "Batch not found" };
   const confirmed = batch.events.some((e) => ["DISTRIBUTOR_CONFIRMED", "DISPUTE_RESOLVED"].includes(e.type));
@@ -42,27 +25,18 @@ export function certEligibility(batch) {
   return { eligible: true };
 }
 
+// Certificate binding enforcement is a real, thrown 409 for every
+// ineligibility (`ALREADY_DESTROYED`, `NOT_DISTRIBUTOR_CONFIRMED`,
+// `NOT_FORWARDED`, `CHAIN_HALTED_DISPUTE`) — never a soft 200. ARCHITECTURE.md
+// §8.5 previously described a `{ok: false, reason}` 200 shape; that was the
+// mismatch, resolved by updating the docs to match the real backend (§10's
+// own error table already lists these as 409 cases) rather than reshaping a
+// backend that already does the right thing. The caller
+// (pages/manufacturer.jsx's CertUpload) catches the 409 itself via
+// `onError` — the client-side `certEligibility` pre-check above already
+// keeps this the rare/hostile-client path in practice.
 export async function uploadCertificate(batchId, { certId, fileName }, actor) {
-  await delay(300);
-  let result = null;
-  mutate((s) => {
-    const batch = s.batches.find((b) => b.id === batchId);
-    if (!batch) return;
-    const elig = certEligibility(batch);
-    if (!elig.eligible) {
-      result = { ok: false, reason: elig.reason };
-      return;
-    }
-    batch.status = "DESTROYED";
-    batch.destroyed = true;
-    batch.destroyedDate = new Date().toISOString();
-    batch.certId = certId || `CERT-${batch.code}-2026`;
-    const fac = batch.scheduledFacility;
-    batch.holder = { type: "FACILITY", id: fac?.id, name: fac?.name || "Licensed facility" };
-    appendEvent(batch, "DESTROYED", actor, { facility: fac?.name, certId: batch.certId, fileName });
-    notify("REGULATOR", "Batch destroyed", `${batch.drugName} (${batch.id}) destruction certificate uploaded`, "success", `/regulator/batches/${batch.id}`);
-    notify("RETAILER", "Return closed", `${batch.drugName} was destroyed and verified`, "success");
-    result = { ok: true, batch: { ...batch }, coveredBatches: [batch.id] };
-  });
-  return result;
+  const res = await apiPost("/manufacturer/certificates", { batchId, certId, fileName });
+  await refreshBatches();
+  return { ok: true, batch: res.batch, coveredBatches: res.coveredBatches };
 }

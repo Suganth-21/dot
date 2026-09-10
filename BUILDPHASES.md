@@ -542,7 +542,224 @@ Not required for the demo. Documented so it is a decision, not an oversight.
 
 ---
 
-## Frontend swap plan
+## Frontend swap plan — EXECUTED
+
+Run all-at-once (the backend was already complete through Phase 9 when this
+started, so there was no reason to stage it phase-by-phase) rather than
+phase-by-phase as originally sketched below. Every service, the auth store,
+and the real-time layer now call the real backend. Verified against a real
+running `uvicorn` server and a real `npm start` dev server, driven by an
+actual headless-Chromium session (Playwright, since `chromium-cli` was not
+installed on this machine) clicking through every step below — not just
+compiled or unit-tested.
+
+**Files created:** `frontend/src/lib/api.js`.
+**Files deleted:** `frontend/src/services/seed.js` (only after every
+consumer was verified against the real backend — nothing in `db.js` reads
+it anymore).
+**Files changed:** `frontend/.env`; `frontend/src/store/authStore.js`;
+`frontend/src/pages/Login.jsx` (wired the already-present but inert
+email/password fields and demo buttons to real `login`/`demoLogin` — no
+layout change); `frontend/src/services/{referenceService,batchService,
+verifyService,alertService,returnService,pickupService,manufacturerService,
+notificationService,analyticsService,entityService,db}.js`;
+`frontend/src/hooks/useDb.js` needed **zero** changes — `getState`/
+`subscribe`'s contract with `db.js` never changed shape, which is the whole
+payoff of the seam existing; `frontend/src/components/common/index.jsx`
+(additive `QUANTITY_CAP` `STATUS_MAP` entry only).
+**One backend file changed, outside the nominal scope of this task:**
+`backend/app/services/batch_status.py` — see "Bugs found and fixed" below.
+
+### Deviations from the plan below, and how they were resolved
+
+1. **`addBatch` re-entry shape — RESOLVED, round 2: docs changed, not the
+   backend.** The mock returned a 200 `{reentry: true, alert, batch}` for
+   registering an already-`DESTROYED` batch id; the real `POST
+   /api/batches` has always raised a real `409 BATCH_DESTROYED_REENTRY`
+   instead (`batch_service.register_batch`). Round 1 of this integration
+   shimmed the mismatch by catching that code in `batchService.addBatch`
+   and translating it back to a 200. Round 2 removed the shim: the 409
+   propagates for real, and `pages/pharmacy.jsx`'s `InventoryAdd` now has
+   an `onError` handler on its mutation that checks
+   `err.code === "BATCH_DESTROYED_REENTRY"` for the same toast + redirect
+   behavior. This was the right call, not just a style preference — §10's
+   own error-code table already lists re-entry as a 409 case, and ARCHITECTURE.md
+   §8.2's `{reentry: true}` 200 description was the stale half of the
+   contract, not the backend. §8.2 is corrected to match. Registering a
+   duplicate *non-destroyed* id (`BATCH_ALREADY_EXISTS`) is still a real
+   thrown error with no special page handling — nothing in the demo path
+   exercises it.
+2. **`uploadCertificate` ineligible shape — RESOLVED, round 2: docs
+   changed, not the backend.** Same pattern as #1.
+   `manufacturer_service._assert_cert_eligible` has always raised
+   (`NOT_DISTRIBUTOR_CONFIRMED`, `NOT_FORWARDED`, `ALREADY_DESTROYED`,
+   `CHAIN_HALTED_DISPUTE`), never returned the mock's soft `{ok: false,
+   reason}` 200. The round-1 shim in `manufacturerService.uploadCertificate`
+   is gone; `pages/manufacturer.jsx`'s `CertUpload` now has an `onError`
+   handler toasting `err.message` directly (409 messages are already
+   written for humans, per the client error conventions above). §8.5 is
+   corrected to match the real backend. The page's own client-side
+   `certEligibility` pre-check still disables the submit button for the
+   same reasons, so this path stays rare in practice — a hostile/racing
+   client is what actually reaches the 409 now, correctly, instead of a
+   silently-reshaped 200.
+3. **`InventoryAdd`'s form didn't collect two fields `RegisterBatchRequest`
+   requires — RESOLVED, round 2: the page grew the fields.** Round 1
+   worked around this at the service layer (`batchService.addBatch`
+   guessing `unitPrice`/`manufacturerId` from reference data by name/key
+   match). Round 2 replaced that guess with the real fix: the add-stock
+   form now has actual drug and manufacturer `<Select>` pickers
+   (`GET /api/reference/drugs`, `getManufacturers()`), and picking either
+   sets `unitPrice`/`category`/`drugKey`/`manufacturerId` directly in form
+   state — real, unambiguous, user-chosen values, not a service-layer
+   lookup papering over a missing UI field. The scan path (`onScan`) does
+   the same match-by-key/name lookup the old service-layer shim used to do,
+   but now it's a one-time fill of form state the user can see and correct
+   before submitting, not a hidden fallback on every request. The
+   free-text batch-id field also grew a "Generate" button
+   (`genBatchId`) so a low-literacy retailer never has to invent one by
+   hand. `batchService.addBatch` is back to a plain pass-through — no
+   workaround left in the service layer at all.
+4. **`GET /api/sales?pharmacyId=`** (§8.8) was never implemented
+   backend-side — confirmed by reading `app/api/__init__.py`'s router list,
+   not just failing to find it. `referenceService.getSales` still calls it
+   verbatim (per contract, so it fails loudly and visibly if ever called),
+   but nothing calls it — it was dead code even in the mock. The one real
+   consumer, `pages/pharmacy.jsx`'s Sales page (`s.sales` via `useLive`), is
+   served instead by `services/db.js` deriving a sales feed client-side from
+   every fetched batch's own `SALE`-type `events[]` — data `GET /api/batches`
+   already delivers, authoritative, no guessing.
+5. **A `useLive`-shaped cache, not just a WebSocket store.** §9.5 describes
+   `useLive` as "subscribing to a WebSocket-backed client store" as if the
+   store were purely WS-fed. In practice `db.js`'s cache is bootstrapped by
+   REST on login/reload, kept current by a `refreshX()` re-fetch after every
+   mutating service call succeeds (since local optimistic mutation no
+   longer exists — the server is the only writer), and *additionally*
+   patched live by WebSocket pushes when Redis is available. This isn't a
+   contract change (every `useLive` call site is untouched and still reads
+   the exact same shape), just a fuller description of what "the seam"
+   ended up doing than §9.5's one sentence implied.
+6. **No server-side WS heartbeat to answer §9.6's "ping every 30s."**
+   `app/api/ws.py`'s receive loop only ever handles `subscribe`/
+   `unsubscribe` — there's no server-initiated ping frame and no app-level
+   pong handler. The client (`db.js`) implements a connect-time watchdog
+   instead (a socket that says nothing back — not even a subscribe ack —
+   within 45s is treated as dead and rebuilt) rather than a literal 30s
+   ping/pong the backend has no matching half for. A human should decide
+   whether to add a real heartbeat to `ws.py` or leave the watchdog as the
+   permanent design.
+
+### Bugs found and fixed (outside this task's nominal scope, flagged here rather than silently carried)
+
+- **`backend/app/services/batch_status.py`'s `derive_status` crashed every
+  real batch registration with a date-only expiry.** `POST /api/batches`
+  called it with `payload.expiry_date` — whatever the client sent, and a
+  plain `<input type="date">` (`pages/pharmacy.jsx`'s add-stock form)
+  produces a timezone-*naive* datetime once Pydantic parses it — subtracted
+  directly against `now` (`DEMO_NOW`, always timezone-*aware*), Python
+  raises `TypeError: can't subtract offset-naive and offset-aware
+  datetimes`. This was invisible under `pytest` and the manual 9-step
+  server-only walkthrough because every seeded batch's dates were already
+  constructed as timezone-aware Python `datetime`s by the seed script
+  itself — it only reproduces with a genuinely new client-supplied date,
+  which nothing had sent through the real HTTP layer until this
+  integration did. Fixed by comparing `.date()` on both sides instead of
+  the raw `datetime`s — sidesteps naive/aware entirely and matches what
+  "days to expiry" already means everywhere else in the codebase (whole
+  calendar days), including the frontend's own day-rounding. One line,
+  `backend/app/services/batch_status.py`, with the reasoning recorded
+  inline as a comment. This also silently masked itself as a CORS error in
+  the browser (`unhandled_exception_handler`'s 500 response reached the
+  client without `Access-Control-Allow-Origin`, which Chrome reports as a
+  CORS failure rather than surfacing the real 500) — worth knowing if a
+  future "CORS blocked" report shows up for a POST/PATCH that isn't
+  actually a CORS misconfiguration.
+
+### Round 2 — production-completeness pass
+
+Follow-up work after the initial integration and after a first feature
+round (on-phone QR generation for the retail layer, a friendlier
+drug/manufacturer-picker add-stock form — see git history for that
+commit). This round: real Redis, real photo upload, the response-shape
+resolutions in the deviations list above, and a lint pass.
+
+- **A real, serious realtime bug, found and fixed —
+  `backend/app/core/realtime.py`.** "Live WebSocket push… never exercised"
+  was the round-1 report's one open item. Sourced a real Windows Redis
+  build (`github.com/tporadowski/redis`, standalone `redis-server.exe`, no
+  Docker/WSL available on this machine) and pointed `REDIS_URL` at it —
+  and the realtime layer was still completely broken: `redis-cli
+  PSUBSCRIBE` confirmed every `route.position`/`alert.created` message was
+  genuinely reaching Redis, but zero of them ever reached a subscribed
+  WebSocket client. Root cause: `redis.asyncio`'s `PubSub` object is only
+  safe to read from and mutate (subscribe/unsubscribe) from a single task.
+  The original `subscribe_local` called `self._pubsub.subscribe(channel)`
+  directly from the WebSocket handler's task while a *different* task
+  (`_listen()`) was concurrently iterating `.listen()` — this silently
+  breaks delivery (verified in isolation against real Redis, independent
+  of this codebase, before touching the fix). Rewrote the hub so only
+  `_listen()` ever touches `self._pubsub`: `subscribe_local`/
+  `unsubscribe_local` now enqueue a request and await a future that
+  `_listen()` resolves after actually applying it, and `_listen()`
+  subscribes to a harmless keepalive channel before starting its
+  `get_message()` poll loop (a PubSub with zero subscriptions never
+  establishes a connection for a later concurrent subscribe to attach to
+  — also verified empirically). Confirmed fixed against the real
+  end-to-end path: a real dispatched route's GPS ticks arrived as live
+  `route.position` frames over a real WebSocket (position genuinely
+  changing, ~1/sec); the project's own (previously never-successfully-run)
+  `backend/scripts/ws_load_test.py` against 50 concurrent connections on
+  `alerts:regulator`, triggered by a real re-entry registration, delivered
+  to 50/50 clients with max latency 0.69s — comfortably inside §9.1's 2s
+  requirement. All 247 backend tests still pass. `backend/.env`'s
+  `REDIS_URL` now points at the local Redis; `frontend/.env` unchanged.
+  **This closes CONTEXT.md's "what remains unverified" item entirely** —
+  live push is no longer a documented gap, it's confirmed working.
+
+  Also discovered while chasing this: `reset_demo_data` never seeds any
+  `routes` rows despite this doc's own "Seed data spec" table (below)
+  listing two. Investigated rather than "fixed" — `reset_demo_data`'s own
+  docstring and `CONTEXT.md`'s reasoning for alerts/notifications
+  (deliberately not seeded; "a demo session gets its first alert live,
+  from an actual action") is the same pattern the seed script actually
+  implements for routes/returns too, just never updated in this table.
+  Left as-is, consistent with that established pattern, rather than
+  force-seeding synthetic route history against the codebase's own
+  design; the "Seed data spec" table's `Routes | 2 | …` row is stale
+  documentation and should be corrected or the seed script extended — a
+  human call, not made unilaterally here.
+
+- **`POST /api/uploads/photo` wired into the two real photo-capture
+  flows.** It existed, worked, and had zero callers. New
+  `frontend/src/services/uploadService.js` (`uploadPhoto(file)`) and
+  `frontend/src/components/scanner/PhotoCapture.jsx` (opens the device
+  camera via `<input type="file" accept="image/*" capture="environment">`,
+  uploads, shows a real thumbnail + the server-computed SHA-256
+  `photoHash`) replace the two fake "tap to toggle a boolean, send a
+  hardcoded string" buttons: `pages/pharmacy.jsx`'s `ReturnNew` (was
+  `photoHash: "0xstrip" + batchId`) and `pages/distributor.jsx`'s
+  `ReturnDetail` receive card (was the literal string `"0xdist"`). Both
+  return flows now require a real captured photo before their submit
+  button enables — the photo fields exist for exactly this
+  chain-of-custody evidence purpose (CLAUDE.md's dispute-gate rule), so a
+  placeholder string defeated the point. `new src/lib/api.js`'s
+  `apiUpload()` handles the one request shape the rest of the client
+  doesn't: multipart `FormData`, no JSON `Content-Type` (the browser sets
+  its own boundary), same 401-refresh-and-retry handling as every other
+  call. `agent.jsx`'s "Scan QR / photograph" pickup-stop button is a UI
+  gate only (`pickupSvc.agentPickup` never took a photoHash param) —
+  correctly left alone, not a real photo-capture site.
+
+- **Lint cleanup.** `App.js`, `NotificationBell.jsx`, `agent.jsx`,
+  `distributor.jsx`, `pharmacy.jsx` had accumulated unused imports/vars
+  from earlier edits (some predating this integration entirely) that
+  `CI=true npx react-scripts build` flags as errors. Removed the dead
+  imports; the one `no-loop-func` warning in `distributor.jsx`'s
+  nearest-neighbour route builder was fixed by capturing the loop
+  variable into a `const` before the closure captures it. `CI=true npx
+  react-scripts build` is clean.
+
+### Frontend swap plan (original, as written before execution)
 
 The frontend does not change shape. Only the bodies of service functions change,
 plus one new HTTP client, one auth store change, and one hook rewrite.

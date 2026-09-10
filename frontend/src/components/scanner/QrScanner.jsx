@@ -1,24 +1,50 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
-import { Camera, CameraOff, Zap } from "lucide-react";
+import { Camera, CameraOff, Zap, RefreshCw } from "lucide-react";
 import { Button } from "../ui";
 import { cn } from "../../lib/utils";
+
+// Camera failures aren't all the same problem, and "camera unavailable"
+// with no way to retry made every real cause (permission blocked, no
+// device, Brave/Chrome auto-denying until a site setting is flipped) look
+// identical and unrecoverable without a full page reload. Classified below
+// so the message tells the user what to actually do, and a real retry
+// button re-runs getCameras() on a fresh click (a new user gesture is
+// sometimes what a browser needs to re-offer the permission prompt after
+// an earlier dismissal).
+function classifyCameraError(err) {
+  const s = String(err?.name || err?.message || err || "").toLowerCase();
+  if (s.includes("notallowed") || s.includes("permission") || s.includes("denied")) return "denied";
+  if (s.includes("notfound") || s.includes("no camera") || s.includes("nocamerasfound")) return "notfound";
+  if (s.includes("notreadable") || s.includes("trackstart")) return "busy";
+  return "error";
+}
+
+const STATUS_COPY = {
+  denied: "Camera permission is blocked. Click the camera icon in the address bar → Allow, then retry.",
+  notfound: "No camera found on this device. Use a demo code below.",
+  busy: "Camera is in use by another app or tab. Close it, then retry.",
+  error: "Camera unavailable in this browser. Use a demo code below.",
+};
 
 export default function QrScanner({ onScan, demoCodes = [], height = 300, className }) {
   const ref = useRef(null);
   const scannerRef = useRef(null);
-  const [status, setStatus] = useState("starting"); // starting | scanning | error
+  const [status, setStatus] = useState("starting"); // starting | scanning | denied | notfound | busy | error
+  const [attempt, setAttempt] = useState(0);
   const idRef = useRef("qr-" + Math.random().toString(36).slice(2, 8));
 
   useEffect(() => {
     let mounted = true;
+    setStatus("starting");
     const el = document.getElementById(idRef.current);
-    if (!el) return;
+    if (!el) return undefined;
     const scanner = new Html5Qrcode(idRef.current, { verbose: false });
     scannerRef.current = scanner;
     Html5Qrcode.getCameras()
       .then((cams) => {
-        if (!mounted || !cams || cams.length === 0) { setStatus("error"); return; }
+        if (!mounted) return;
+        if (!cams || cams.length === 0) { setStatus("notfound"); return; }
         const camId = cams[cams.length - 1].id;
         return scanner.start(
           camId,
@@ -33,7 +59,7 @@ export default function QrScanner({ onScan, demoCodes = [], height = 300, classN
           setStatus("scanning");
         });
       })
-      .catch(() => mounted && setStatus("error"));
+      .catch((err) => mounted && setStatus(classifyCameraError(err)));
 
     return () => {
       mounted = false;
@@ -51,14 +77,14 @@ export default function QrScanner({ onScan, demoCodes = [], height = 300, classN
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [attempt]);
 
   return (
     <div className={cn("space-y-3", className)}>
       <div className="relative overflow-hidden rounded-clay bg-clay-ink ring-1 ring-clay-line" style={{ minHeight: height }}>
         <div id={idRef.current} ref={ref} style={{ width: "100%" }} />
         {status !== "scanning" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-clay-ink text-center text-white/90" style={{ minHeight: height }}>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-clay-ink px-6 text-center text-white/90" style={{ minHeight: height }}>
             {status === "starting" ? (
               <>
                 <Camera className="h-10 w-10 animate-pulse" />
@@ -67,7 +93,10 @@ export default function QrScanner({ onScan, demoCodes = [], height = 300, classN
             ) : (
               <>
                 <CameraOff className="h-10 w-10 text-white/60" />
-                <p className="max-w-xs text-sm text-white/70">Camera unavailable in this environment. Use a demo code below to simulate a scan.</p>
+                <p className="max-w-xs text-sm text-white/70" data-testid="camera-error-message">{STATUS_COPY[status] || STATUS_COPY.error}</p>
+                <Button size="sm" variant="soft" onClick={() => setAttempt((a) => a + 1)} data-testid="camera-retry-btn">
+                  <RefreshCw className="h-4 w-4" /> Try again
+                </Button>
               </>
             )}
           </div>
