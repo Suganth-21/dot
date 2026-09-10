@@ -12,14 +12,19 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.errors import NotFound, Unauthorized
 from app.core.rbac import Role
-from app.core.security import create_access_token, create_refresh_token, decode_token, verify_password
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    verify_password,
+)
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.repositories import refresh_token_repo, user_repo
@@ -42,7 +47,7 @@ async def _issue_token_pair(
     access_token = create_access_token(user_id=user.id, role=user.role.value, entity_id=user.entity_id)
     refresh_token_str = create_refresh_token(user_id=user.id, family_id=family, jti=jti)
 
-    expires_at = datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_ttl_days)
+    expires_at = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_ttl_days)
     row = await refresh_token_repo.create(
         session,
         RefreshToken(
@@ -52,7 +57,7 @@ async def _issue_token_pair(
             family_id=family,
             revoked=False,
             expires_at=expires_at,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         ),
     )
     return access_token, refresh_token_str, row
@@ -110,7 +115,7 @@ async def refresh(session: AsyncSession, *, refresh_token_str: str) -> tuple[str
         await session.commit()
         raise Unauthorized("Refresh token has been revoked.", code="TOKEN_EXPIRED")
 
-    if stored.expires_at <= datetime.now(timezone.utc):
+    if stored.expires_at <= datetime.now(UTC):
         raise Unauthorized("Invalid or expired token.", code="TOKEN_EXPIRED")
 
     user = await user_repo.get_by_id(session, payload["sub"])

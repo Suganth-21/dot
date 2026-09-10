@@ -62,7 +62,7 @@ class EventOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, event: Any) -> "EventOut":
+    def from_model(cls, event: Any) -> EventOut:
         event_type = event.type.value if hasattr(event.type, "value") else event.type
         gps = GpsOut(lat=event.gps_lat, lng=event.gps_lng) if event.gps_lat is not None else None
         return cls(
@@ -119,7 +119,7 @@ class BatchOut(BaseModel):
     @classmethod
     def from_model(
         cls, batch: Any, *, status: BatchStatus, events: list[Any], facility_name: str | None = None
-    ) -> "BatchOut":
+    ) -> BatchOut:
         """Assembles the wire shape from an ORM `Batch` row plus its
         already-derived status (see `app.services.batch_status`) and
         already-loaded events. A leaf classmethod rather than a

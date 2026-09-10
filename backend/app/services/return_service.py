@@ -13,7 +13,7 @@ phase's `manufacturer_service.assert_cert_eligible` (§7.2) — it takes a
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +46,13 @@ from app.schemas.return_ import (
     ReturnDetailOut,
     ReturnOut,
 )
-from app.services import alert_service, batch_service, event_service, fraud_service, notification_service
+from app.services import (
+    alert_service,
+    batch_service,
+    event_service,
+    fraud_service,
+    notification_service,
+)
 
 # ARCHITECTURE.md §5.2: legacy aliases accepted on input, never stored or emitted.
 _STATUS_ALIASES = {"ASSIGNED": ReturnStatus.SCHEDULED, "EN_ROUTE": ReturnStatus.SCHEDULED}
@@ -217,7 +223,7 @@ async def create_return(session: AsyncSession, actor: User, payload: CreateRetur
     if distributor is None:
         raise NotFound("Distributor not found.", code="DISTRIBUTOR_NOT_FOUND")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ret = Return(
         id=f"ret_{uuid.uuid4().hex[:16]}",
         batch_id=batch.id,
@@ -301,7 +307,7 @@ async def distributor_receive(
     ret.quantity_received = payload.quantity_received
     ret.distributor_photo_hash = payload.photo_hash
     ret.distributor_notes = payload.notes
-    ret.updated_at = datetime.now(timezone.utc)
+    ret.updated_at = datetime.now(UTC)
 
     batch = await batch_repo.get_for_update(session, ret.batch_id)
     distributor = await reference_repo.get_distributor(session, ret.distributor_id)
@@ -375,7 +381,7 @@ async def resolve_dispute(
 
     ret.resolution_notes = resolution_notes
     ret.status = ReturnStatus.CONFIRMED
-    ret.updated_at = datetime.now(timezone.utc)
+    ret.updated_at = datetime.now(UTC)
 
     batch = await batch_repo.get_for_update(session, ret.batch_id)
     distributor = await reference_repo.get_distributor(session, ret.distributor_id)
@@ -440,7 +446,7 @@ async def forward_returns(session: AsyncSession, actor: User, return_ids: list[s
             )
 
         ret.status = ReturnStatus.FORWARDED
-        ret.updated_at = datetime.now(timezone.utc)
+        ret.updated_at = datetime.now(UTC)
 
         batch = await batch_repo.get_for_update(session, ret.batch_id)
         if batch is not None:
@@ -498,7 +504,7 @@ async def set_return_status(session: AsyncSession, actor: User, return_id: str, 
         )
 
     ret.status = target
-    ret.updated_at = datetime.now(timezone.utc)
+    ret.updated_at = datetime.now(UTC)
     batch = await batch_repo.get_for_update(session, ret.batch_id)
     distributor = await reference_repo.get_distributor(session, ret.distributor_id)
 

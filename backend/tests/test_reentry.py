@@ -3,7 +3,7 @@
 BUILDPHASES.md Phase 3. Real HTTP requests against a real database, seeded
 via the real reset path — see ARCHITECTURE.md's "How to test" list under §7.3.
 """
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -43,7 +43,7 @@ def _fake_actor(entity_id: str) -> User:
     return User(
         id="usr_test_ph3", email="test-ph3@dot.in", password_hash="x", name="Test PH3 Login",
         role=Role.RETAILER, entity_id=entity_id, is_demo=False,
-        signing_public_key="x", signing_private_key="x", created_at=datetime.now(timezone.utc),
+        signing_public_key="x", signing_private_key="x", created_at=datetime.now(UTC),
     )
 
 

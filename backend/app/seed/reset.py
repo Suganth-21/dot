@@ -19,7 +19,7 @@ matters.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +31,15 @@ from app.core.security import hash_password
 from app.models.alert import Alert
 from app.models.batch import Batch
 from app.models.drug import Drug
-from app.models.entity import Agent, Distributor, Facility, Manufacturer, Pharmacy, Regulator, Vehicle
+from app.models.entity import (
+    Agent,
+    Distributor,
+    Facility,
+    Manufacturer,
+    Pharmacy,
+    Regulator,
+    Vehicle,
+)
 from app.models.enums import AgentStatus, DrugCategory
 from app.models.event import Event
 from app.models.notification import Notification
@@ -108,7 +116,7 @@ def _seed_demo_users(session: AsyncSession) -> None:
         raise RuntimeError("DEMO_PASSWORD is not configured — cannot seed demo accounts")
 
     password_hash = hash_password(settings.demo_password)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     for row in seed_data.DEMO_USERS:
         public_key, encrypted_private_key = generate_signing_keypair()

@@ -3,6 +3,7 @@
 seeded via the real reset path.
 """
 import asyncio
+from datetime import UTC
 
 import pytest
 from sqlalchemy import select
@@ -137,11 +138,10 @@ async def test_create_return_on_already_in_return_batch_is_rejected(client, seed
 async def test_create_return_on_destroyed_batch_fires_reentry_not_a_normal_return(client, seeded):
     """ARCHITECTURE.md §7.6 rule-interaction table: "Create return | rules
     ... re-entry" — reuses fraud_service rather than a second implementation."""
-    headers = await _headers(client, "RETAILER")
     # ph_1 has no destroyed batch of its own in the seed; exercise this at
     # the service layer directly against B04 (ph_3) the same way
     # test_reentry.py does for record_sale.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.core.errors import Conflict
     from app.core.rbac import Role
@@ -152,7 +152,7 @@ async def test_create_return_on_destroyed_batch_fires_reentry_not_a_normal_retur
     actor = User(
         id="usr_test_ph3", email="test-ph3-return@dot.in", password_hash="x", name="Test PH3",
         role=Role.RETAILER, entity_id="ph_3", is_demo=False,
-        signing_public_key="x", signing_private_key="x", created_at=datetime.now(timezone.utc),
+        signing_public_key="x", signing_private_key="x", created_at=datetime.now(UTC),
     )
     payload = CreateReturnRequest(batch_id=B04, quantity=5, distributor_id="dist_1", reason="EXPIRED")
 
@@ -288,19 +288,19 @@ async def test_wrong_distributor_cannot_receive(client, seeded):
 
     # Only one DISTRIBUTOR demo account (dist_1) exists; simulate dist_2
     # directly at the service layer.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.core.errors import Forbidden
     from app.core.rbac import Role
+    from app.db import async_session_factory
     from app.models.user import User
     from app.schemas.return_ import DistributorReceiveRequest
     from app.services import return_service
-    from app.db import async_session_factory
 
     actor = User(
         id="usr_test_dist2", email="test-dist2@dot.in", password_hash="x", name="Test Dist2",
         role=Role.DISTRIBUTOR, entity_id="dist_2", is_demo=False,
-        signing_public_key="x", signing_private_key="x", created_at=datetime.now(timezone.utc),
+        signing_public_key="x", signing_private_key="x", created_at=datetime.now(UTC),
     )
     async with async_session_factory() as session:
         with pytest.raises(Forbidden) as exc_info:
@@ -518,17 +518,17 @@ async def test_forward_unowned_return_is_silently_skipped_not_leaked(client, see
     created = (await _create_return(client, retailer, quantity=50)).json()
 
     # dist_2 has no demo login; simulate a second distributor directly.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.core.rbac import Role
+    from app.db import async_session_factory
     from app.models.user import User
     from app.services import return_service
-    from app.db import async_session_factory
 
     actor = User(
         id="usr_test_dist2b", email="test-dist2b@dot.in", password_hash="x", name="Test Dist2",
         role=Role.DISTRIBUTOR, entity_id="dist_2", is_demo=False,
-        signing_public_key="x", signing_private_key="x", created_at=datetime.now(timezone.utc),
+        signing_public_key="x", signing_private_key="x", created_at=datetime.now(UTC),
     )
     async with async_session_factory() as session:
         result = await return_service.forward_returns(session, actor, [created["id"]])
@@ -666,25 +666,25 @@ async def test_returns_list_requires_authentication(client, seeded):
 @pytest.mark.asyncio
 async def test_retailer_cannot_read_another_pharmacys_return(client, seeded):
     # Simulate a ph_3-owned return, then confirm ph_1's RETAILER token can't read it.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.core.rbac import Role
+    from app.db import async_session_factory
     from app.models.user import User
     from app.schemas.return_ import CreateReturnRequest
     from app.services import return_service
-    from app.db import async_session_factory
 
     actor = User(
         id="usr_test_ph3c", email="test-ph3c@dot.in", password_hash="x", name="Test PH3",
         role=Role.RETAILER, entity_id="ph_3", is_demo=False,
-        signing_public_key="x", signing_private_key="x", created_at=datetime.now(timezone.utc),
+        signing_public_key="x", signing_private_key="x", created_at=datetime.now(UTC),
     )
     # ph_3 needs its own ACTIVE/EXPIRING/EXPIRED batch to return — register one.
     async with async_session_factory() as session:
         from app.schemas.batch import RegisterBatchRequest
         from app.services import batch_service
 
-        reg = await batch_service.register_batch(
+        await batch_service.register_batch(
             session, actor,
             RegisterBatchRequest(
                 batch_id="BATCH-TEST-2026-RET1", drug_name="Cefixime 200mg", drug_key="CEF",

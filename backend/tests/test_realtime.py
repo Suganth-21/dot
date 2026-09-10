@@ -13,7 +13,7 @@ needs a live ASGI server and a live Redis instance — see
 `backend/scripts/ws_load_test.py` and `backend/OPERATIONS.md` for that,
 run manually, not from pytest.
 """
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -26,7 +26,7 @@ def _user(role: Role, entity_id: str | None) -> User:
     return User(
         id=f"usr_test_{role.value.lower()}", email=f"test-{role.value.lower()}@dot.in", password_hash="x",
         name="Test User", role=role, entity_id=entity_id, is_demo=False,
-        signing_public_key="x", signing_private_key="x", created_at=datetime.now(timezone.utc),
+        signing_public_key="x", signing_private_key="x", created_at=datetime.now(UTC),
     )
 
 

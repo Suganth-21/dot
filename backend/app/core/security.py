@@ -16,7 +16,7 @@ import uuid
 from typing import Any, Literal
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from jose import JWTError, jwt
 
 from app.config import get_settings

@@ -43,7 +43,7 @@ class AlertOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, alert: Any, *, batch: BatchOut | None = None) -> "AlertOut":
+    def from_model(cls, alert: Any, *, batch: BatchOut | None = None) -> AlertOut:
         return cls(
             id=alert.id,
             type=alert.type,

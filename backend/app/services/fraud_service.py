@@ -9,13 +9,14 @@ commits.
 """
 from __future__ import annotations
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.batch import Batch
 from app.models.entity import Pharmacy
 from app.models.enums import AlertSeverity, AlertType, BatchStatus, EventType
 from app.models.user import User
 from app.repositories import batch_repo
 from app.services import alert_service, event_service
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def check_reentry(

@@ -1,6 +1,8 @@
 """Pickups, routes, and the agent app — ARCHITECTURE.md §4.6, §5.3, §8.4;
 BUILDPHASES.md Phase 5. Real HTTP requests against a real database.
 """
+from datetime import UTC
+
 import pytest
 from sqlalchemy import select
 
@@ -139,18 +141,18 @@ async def test_agent_cannot_act_on_another_agents_route(client, seeded):
     _ret_id, route, _distributor = await _create_and_schedule_return(client)
     # Only one PICKUP_AGENT demo account (agent_1, on dist_1) exists, and
     # the route was assigned to agent_1 — simulate agent_2 directly.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.core.errors import Forbidden
     from app.core.rbac import Role
+    from app.db import async_session_factory
     from app.models.user import User
     from app.services import pickup_service
-    from app.db import async_session_factory
 
     actor = User(
         id="usr_test_agent2", email="test-agent2@dot.in", password_hash="x", name="Test Agent 2",
         role=Role.PICKUP_AGENT, entity_id="agent_2", is_demo=False,
-        signing_public_key="x", signing_private_key="x", created_at=datetime.now(timezone.utc),
+        signing_public_key="x", signing_private_key="x", created_at=datetime.now(UTC),
     )
     async with async_session_factory() as session:
         with pytest.raises(Forbidden) as exc_info:

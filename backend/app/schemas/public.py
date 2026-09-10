@@ -6,7 +6,6 @@ rule 3, rule 4: these routes stay public forever). See ARCHITECTURE.md §3,
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 

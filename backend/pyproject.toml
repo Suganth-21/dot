@@ -1,0 +1,28 @@
+[tool.ruff]
+target-version = "py312"
+# This codebase's actual line length in practice (Pydantic/SQLAlchemy
+# declarations, long descriptive test names) — 88 (Black's default) would
+# flag hundreds of lines that were never written against that limit.
+line-length = 130
+
+[tool.ruff.lint]
+# A curated, explicit rule set rather than ruff's own default profile: with
+# zero config, this ruff version enables ~400 rules across every plugin it
+# ships, which is far more opinionated than this project ever adopted.
+# E/F/I/UP/B cover real bugs (undefined names, unused imports/variables,
+# import ordering, outdated syntax, common footguns) without the noise.
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    # FastAPI's dependency-injection pattern is `param: T = Depends(...)`,
+    # including dependency *factories* like `Depends(require_role(Role.X))`
+    # (app/deps.py) — a function call as a default argument value that is
+    # idiomatic and required by the framework, not the mutable-default-
+    # argument bug B008 exists to catch.
+    "B008",
+    # Every enum in this codebase is `class X(str, enum.Enum)` so its
+    # members serialize as plain strings through Pydantic/SQLAlchemy
+    # without a custom encoder — a deliberate, working pattern predating
+    # `enum.StrEnum` (3.11+). Not worth a mechanical mass-rewrite for a
+    # style preference with no behavior difference here.
+    "UP042",
+]

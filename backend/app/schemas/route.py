@@ -28,7 +28,7 @@ class RouteStopOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, stop: Any) -> "RouteStopOut":
+    def from_model(cls, stop: Any) -> RouteStopOut:
         return cls(
             pharmacy_id=stop.pharmacy_id, pharmacy_name=stop.pharmacy_name, address=stop.address,
             lat=stop.lat, lng=stop.lng, order=stop.stop_order, status=stop.status,
@@ -61,7 +61,7 @@ class RouteOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, route: Any, stops: list[Any]) -> "RouteOut":
+    def from_model(cls, route: Any, stops: list[Any]) -> RouteOut:
         pos = PosOut(lat=route.pos_lat, lng=route.pos_lng) if route.pos_lat is not None else None
         return cls(
             id=route.id, distributor_id=route.distributor_id, agent_id=route.agent_id,

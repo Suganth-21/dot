@@ -5,6 +5,7 @@ not the Python service's own error handling — the service is not what is
 under test here, the `UNIQUE` constraints are.
 """
 import uuid
+from datetime import UTC
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -35,10 +36,10 @@ def _make_event(**overrides) -> Event:
         signer_key_id="ph_1",
     )
     defaults.update(overrides)
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if defaults["ts"] is None:
-        defaults["ts"] = datetime.now(timezone.utc)
+        defaults["ts"] = datetime.now(UTC)
     return Event(**defaults)
 
 

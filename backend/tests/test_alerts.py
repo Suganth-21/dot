@@ -4,7 +4,7 @@ database, seeded via the real reset path.
 """
 import pytest
 
-from app.models.enums import AlertSeverity, AlertStatus, AlertType
+from app.models.enums import AlertSeverity, AlertType
 from app.services import alert_service
 
 DESTROYED_BATCH = "BATCH-DOX-2026-B04"  # ph_3, mfr_1 — see app/seed/seed_batches.py

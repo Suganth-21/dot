@@ -63,7 +63,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
                 await websocket.send_json({"type": "error", "code": "UNKNOWN_ACTION"})
     except WebSocketDisconnect:
         pass
-    except Exception:  # noqa: BLE001 — a single connection's failure must not take the endpoint down
+    except Exception:
         logger.exception("websocket handler error")
     finally:
         hub.drop_connection(websocket)

@@ -33,9 +33,15 @@ def test_sha256_hex_is_64_hex_chars_and_deterministic():
 
 
 def test_ed25519_sign_and_verify_round_trip():
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
     import base64
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        NoEncryption,
+        PrivateFormat,
+        PublicFormat,
+    )
 
     key = Ed25519PrivateKey.generate()
     private_raw = key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
@@ -48,9 +54,15 @@ def test_ed25519_sign_and_verify_round_trip():
 
 
 def test_ed25519_verify_fails_on_wrong_hash():
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
     import base64
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        NoEncryption,
+        PrivateFormat,
+        PublicFormat,
+    )
 
     key = Ed25519PrivateKey.generate()
     private_raw = key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())

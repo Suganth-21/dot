@@ -11,7 +11,11 @@ from app.config import get_settings
 from app.core.crypto import sha256_hex
 from app.core.rate_limit import limiter
 from app.deps import get_db
-from app.schemas.public import ReportSuspiciousRequest, ReportSuspiciousResponse, VerifyBatchOut
+from app.schemas.public import (
+    ReportSuspiciousRequest,
+    ReportSuspiciousResponse,
+    VerifyBatchOut,
+)
 from app.services import verify_service
 
 router = APIRouter()

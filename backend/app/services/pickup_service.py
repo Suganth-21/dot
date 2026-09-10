@@ -6,7 +6,7 @@ ARCHITECTURE.md §4.6, §5.3, §8.4, §9.4.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +14,14 @@ from app.core.errors import Conflict, Forbidden, NotFound, ValidationFailed
 from app.core.rbac import Role
 from app.core.realtime import hub
 from app.models.entity import Agent, Vehicle
-from app.models.enums import AgentStatus, EventType, NotificationKind, ReturnStatus, RouteStatus, StopStatus
+from app.models.enums import (
+    AgentStatus,
+    EventType,
+    NotificationKind,
+    ReturnStatus,
+    RouteStatus,
+    StopStatus,
+)
 from app.models.route import Route, RouteStop
 from app.models.user import User
 from app.repositories import batch_repo, reference_repo, return_repo, route_repo
@@ -156,7 +163,7 @@ async def create_route(session: AsyncSession, actor: User, payload: CreateRouteR
             ordered.append(nxt)
             cur = nxt
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     path = [{"lat": distributor.lat, "lng": distributor.lng}] + [{"lat": s["lat"], "lng": s["lng"]} for s in ordered]
     route = Route(
         id=f"route_{uuid.uuid4().hex[:16]}",
@@ -243,7 +250,7 @@ async def agent_arrive(session: AsyncSession, actor: User, route_id: str, stop_i
         ret = await return_repo.get_for_update(session, stop.return_id)
         if ret is not None:
             ret.status = ReturnStatus.ARRIVED
-            ret.updated_at = datetime.now(timezone.utc)
+            ret.updated_at = datetime.now(UTC)
             batch = await batch_repo.get_for_update(session, ret.batch_id)
             if batch is not None:
                 await event_service.append(
@@ -285,7 +292,7 @@ async def agent_pickup(session: AsyncSession, actor: User, route_id: str, stop_i
         if ret is not None:
             ret.status = ReturnStatus.PICKED_UP
             ret.picked_quantity = counted
-            ret.updated_at = datetime.now(timezone.utc)
+            ret.updated_at = datetime.now(UTC)
             batch = await batch_repo.get_for_update(session, ret.batch_id)
             if batch is not None:
                 await event_service.append(

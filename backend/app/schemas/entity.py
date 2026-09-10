@@ -4,8 +4,6 @@ See ARCHITECTURE.md §8.9.
 """
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.alert import AlertOut

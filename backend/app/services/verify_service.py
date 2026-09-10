@@ -5,7 +5,7 @@ may ever require authentication. See ARCHITECTURE.md §3, §7.3, §8.7.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,7 +87,7 @@ async def report_suspicious(
     # A live patient action happening "now", same reasoning as
     # alert_service.raise_alert's timestamp — not pinned to DEMO_NOW, which
     # is only for seeded historical data (ARCHITECTURE.md §4.10).
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     location = payload.location or LocationIn()
 
     report = PatientReport(

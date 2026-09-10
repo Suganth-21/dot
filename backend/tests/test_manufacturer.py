@@ -2,7 +2,7 @@
 ARCHITECTURE.md §7.2, §8.5; BUILDPHASES.md Phase 6. Real HTTP requests
 against a real database.
 """
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy import select
@@ -90,7 +90,7 @@ async def test_upload_certificate_confirmed_and_forwarded_succeeds(client, seede
     body = resp.json()
     assert body["ok"] is True
     assert body["batch"]["status"] == "DESTROYED"
-    assert body["batch"]["certId"] == f"CERT-DOX-2026-A17-2026"
+    assert body["batch"]["certId"] == "CERT-DOX-2026-A17-2026"
     assert body["coveredBatches"] == [A17]
 
     db_session.expire_all()
@@ -121,14 +121,14 @@ async def test_upload_certificate_wrong_manufacturer_is_403(client, seeded):
     # A17's manufacturer is mfr_1; simulate a different manufacturer.
     from app.core.errors import Forbidden
     from app.core.rbac import Role
+    from app.db import async_session_factory
     from app.models.user import User
     from app.services import manufacturer_service
-    from app.db import async_session_factory
 
     actor = User(
         id="usr_test_mfr2", email="test-mfr2@dot.in", password_hash="x", name="Test Mfr2",
         role=Role.MANUFACTURER, entity_id="mfr_2", is_demo=False,
-        signing_public_key="x", signing_private_key="x", created_at=datetime.now(timezone.utc),
+        signing_public_key="x", signing_private_key="x", created_at=datetime.now(UTC),
     )
     async with async_session_factory() as session:
         with pytest.raises(Forbidden) as exc_info:

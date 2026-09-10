@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import NotificationKind
 
@@ -24,7 +24,7 @@ class NotificationOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, n: Any) -> "NotificationOut":
+    def from_model(cls, n: Any) -> NotificationOut:
         return cls(id=n.id, title=n.title, body=n.body, kind=n.kind, link=n.link, read=n.read, ts=n.ts)
 
 

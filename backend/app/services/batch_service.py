@@ -10,7 +10,7 @@ ARCHITECTURE.md for how the duplicate-id gate and re-entry now interact.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,12 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.errors import Conflict, Forbidden, NotFound
 from app.core.rbac import Role
+from app.core.realtime import hub
 from app.models.batch import Batch
 from app.models.enums import BatchStatus, EventType, HolderType
 from app.models.event import Event
 from app.models.sale import Sale
 from app.models.user import User
 from app.repositories import batch_repo, event_repo, reference_repo, sale_repo
+from app.schemas.alert import AlertOut
 from app.schemas.batch import (
     BatchOut,
     ChainVerificationError,
@@ -33,8 +35,6 @@ from app.schemas.batch import (
     RegisterBatchResponse,
     SearchResultOut,
 )
-from app.core.realtime import hub
-from app.schemas.alert import AlertOut
 from app.services import batch_status, event_service, fraud_service
 
 _derive_status = batch_status.derive_status  # local alias — this module's existing call sites
@@ -188,7 +188,7 @@ async def register_batch(session: AsyncSession, actor: User, payload: RegisterBa
             )
         raise Conflict("A batch with this id already exists.", code="BATCH_ALREADY_EXISTS")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     status = _derive_status(payload.expiry_date, BatchStatus.ACTIVE, get_settings().demo_now_dt)
 
     batch = Batch(
@@ -296,7 +296,7 @@ async def record_sale(session: AsyncSession, actor: User, batch_id: str, units: 
                         details={"available": batch.quantity, "requested": units})
 
     batch.quantity -= units
-    batch.updated_at = datetime.now(timezone.utc)
+    batch.updated_at = datetime.now(UTC)
 
     pharmacy = await reference_repo.get_pharmacy(session, batch.pharmacy_id)
 
@@ -305,7 +305,7 @@ async def record_sale(session: AsyncSession, actor: User, batch_id: str, units: 
         batch_id=batch.id,
         pharmacy_id=batch.pharmacy_id,
         units=units,
-        ts=datetime.now(timezone.utc),
+        ts=datetime.now(UTC),
     )
     await sale_repo.create(session, sale)
 

@@ -15,7 +15,7 @@ state change (quantity decrement, status change, ...) caused it.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,7 +53,7 @@ def _format_ts(ts: datetime) -> str:
     reloading the same instant from PostgreSQL (which stores microsecond
     precision) and reformatting it reproduces this exact string — the hash
     must survive a round trip through the database unchanged."""
-    ts_utc = ts.astimezone(timezone.utc)
+    ts_utc = ts.astimezone(UTC)
     ms = ts_utc.microsecond // 1000
     return ts_utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms:03d}Z"
 
@@ -133,8 +133,8 @@ async def append(
     sequence = 0 if last is None else last.sequence + 1
     prev_hash = GENESIS_HASH if last is None else last.hash
 
-    now = ts or datetime.now(timezone.utc)
-    now = now.astimezone(timezone.utc)
+    now = ts or datetime.now(UTC)
+    now = now.astimezone(UTC)
     now = now.replace(microsecond=(now.microsecond // 1000) * 1000)
 
     gps_lat, gps_lng = gps if gps is not None else (None, None)
@@ -144,7 +144,7 @@ async def append(
         # timestamp, as the mock does". Keyed off `sequence` rather than a
         # wall-clock timestamp so a reseeded batch's events hash identically
         # every reset (BUILDPHASES.md determinism requirement).
-        photo_hash = sha256_hex(f"{batch.id}:{event_type.value}:{sequence}".encode("utf-8"))
+        photo_hash = sha256_hex(f"{batch.id}:{event_type.value}:{sequence}".encode())
 
     payload = _canonical_payload(
         actor_id=actor_id, actor_name=actor_name, actor_role=actor_role, batch_id=batch.id,

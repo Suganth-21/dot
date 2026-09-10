@@ -52,7 +52,7 @@ class ReturnOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, ret: Any) -> "ReturnOut":
+    def from_model(cls, ret: Any) -> ReturnOut:
         return cls(
             id=ret.id, batch_id=ret.batch_id, pharmacy_id=ret.pharmacy_id, distributor_id=ret.distributor_id,
             drug_name=ret.drug_name, category=ret.category, quantity_claimed=ret.quantity_claimed,

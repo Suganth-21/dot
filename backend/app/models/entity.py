@@ -49,8 +49,8 @@ class Distributor(Base):
     signing_public_key: Mapped[str | None] = mapped_column(Text)
     signing_private_key: Mapped[str | None] = mapped_column(Text)
 
-    agents: Mapped[list["Agent"]] = relationship(back_populates="distributor")
-    vehicles: Mapped[list["Vehicle"]] = relationship(back_populates="distributor")
+    agents: Mapped[list[Agent]] = relationship(back_populates="distributor")
+    vehicles: Mapped[list[Vehicle]] = relationship(back_populates="distributor")
 
 
 class Manufacturer(Base):

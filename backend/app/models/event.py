@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Double, Enum, ForeignKey, Integer, Text, UniqueConstraint
+from sqlalchemy import (
+    DateTime,
+    Double,
+    Enum,
+    ForeignKey,
+    Integer,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 

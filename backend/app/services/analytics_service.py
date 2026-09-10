@@ -26,7 +26,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.enums import BatchStatus, ReturnStatus
-from app.repositories import alert_repo, batch_repo, reference_repo, return_repo, route_repo, sale_repo
+from app.repositories import (
+    alert_repo,
+    batch_repo,
+    reference_repo,
+    return_repo,
+    route_repo,
+    sale_repo,
+)
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 

@@ -9,7 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFound
 from app.models.drug import Drug
-from app.models.entity import Agent, Distributor, Facility, Manufacturer, Pharmacy, Regulator, Vehicle
+from app.models.entity import (
+    Agent,
+    Distributor,
+    Facility,
+    Manufacturer,
+    Pharmacy,
+    Regulator,
+    Vehicle,
+)
 from app.repositories import reference_repo
 
 

@@ -24,7 +24,7 @@ BUILDPHASES.md's seed data spec.
 from __future__ import annotations
 
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import TypedDict
 
 from sqlalchemy.ext.asyncio import AsyncSession

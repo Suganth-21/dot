@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.rbac import Role
 from app.deps import get_db, require_permission, require_role
 from app.models.user import User
-from app.schemas.alert import AlertOut, AlertStatusUpdateRequest, AlertStatusUpdateResponse
+from app.schemas.alert import (
+    AlertOut,
+    AlertStatusUpdateRequest,
+    AlertStatusUpdateResponse,
+)
 from app.schemas.report import GenerateReportRequest, ReportOut
 from app.services import alert_service
 

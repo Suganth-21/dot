@@ -9,9 +9,8 @@ docstring was written to support.
 """
 from __future__ import annotations
 
-import uuid
+from datetime import UTC, datetime
 from datetime import date as date_
-from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,7 +66,7 @@ async def schedule_facility(
 
         batch.scheduled_facility_id = facility.id
         batch.scheduled_facility_date = sched_date
-        batch.updated_at = datetime.now(timezone.utc)
+        batch.updated_at = datetime.now(UTC)
 
         await event_service.append(
             session, batch=batch, event_type=EventType.FACILITY_SCHEDULED,
@@ -133,7 +132,7 @@ async def upload_certificate(
     if batch.scheduled_facility_id:
         facility = await reference_repo.get_facility(session, batch.scheduled_facility_id)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     resolved_cert_id = cert_id or f"CERT-{batch.code}-2026"
     batch.status = BatchStatus.DESTROYED
     batch.destroyed = True

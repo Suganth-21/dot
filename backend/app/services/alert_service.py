@@ -18,7 +18,7 @@ instead.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +30,13 @@ from app.models.batch import Batch
 from app.models.enums import AlertSeverity, AlertStatus, AlertType
 from app.models.report import Report
 from app.models.user import User
-from app.repositories import alert_repo, batch_repo, event_repo, reference_repo, report_repo
+from app.repositories import (
+    alert_repo,
+    batch_repo,
+    event_repo,
+    reference_repo,
+    report_repo,
+)
 from app.schemas.alert import AlertOut, AlertStatusUpdateResponse
 from app.schemas.batch import BatchOut
 from app.schemas.report import GenerateReportRequest, ReportOut
@@ -57,7 +63,7 @@ async def raise_alert(
     `event_service.append`), and in the re-entry path the caller commits
     even though the operation that triggered the alert is refused (the
     alert must survive; the refused write must not)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     alert = Alert(
         id=f"alert_{uuid.uuid4().hex[:16]}",
         type=type_,
@@ -187,7 +193,7 @@ def transition(
         {
             "action": action or status.value,
             "officer": officer or "Officer",
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "notes": notes,
         },
     ]
@@ -217,7 +223,7 @@ async def list_reports(session: AsyncSession) -> list[ReportOut]:
 async def generate_report(session: AsyncSession, payload: GenerateReportRequest) -> ReportOut:
     """Metadata-only — real PDF generation is Phase 9 (BUILDPHASES.md cut
     list #2). Matches the mock's `generateReport` defaults exactly."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     month_label = now.strftime("%b %Y")
     report = Report(
         id=f"rep_{uuid.uuid4().hex[:16]}",

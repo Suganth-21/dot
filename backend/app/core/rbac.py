@@ -43,7 +43,7 @@ class CurrentUser:
     entity_id: str | None
 
     @classmethod
-    def from_user(cls, user: object) -> "CurrentUser":
+    def from_user(cls, user: object) -> CurrentUser:
         """Builds the lean carrier from an ORM `User` row without importing
         `app.models` here (core stays beneath models in the dependency
         direction — ARCHITECTURE.md §2)."""

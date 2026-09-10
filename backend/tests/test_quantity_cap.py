@@ -13,7 +13,7 @@ this rule could ever be reached, through the API, with a genuinely
 *additional* incoming quantity. These tests prove the rule itself — the
 arithmetic and the alert it raises — independent of that wiring question.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -28,7 +28,7 @@ MFR_ID = "mfr_1"  # seeded — see app/seed/seed_data.py
 
 def _batch(id_: str, *, initial_quantity: int, quantity: int, category: DrugCategory,
            status: BatchStatus = BatchStatus.ACTIVE) -> Batch:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Batch(
         id=id_, code=id_.removeprefix("BATCH-"), drug_key="DOX", drug_name="Doxorubicin 50mg",
         category=category, unit_price=4200, manufacturer_id=MFR_ID, manufacturer_name="Cipla Ltd.",

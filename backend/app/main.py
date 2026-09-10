@@ -7,7 +7,6 @@ can build isolated instances (see backend/tests/conftest.py).
 """
 import asyncio
 from contextlib import asynccontextmanager
-
 from pathlib import Path
 
 from fastapi import FastAPI

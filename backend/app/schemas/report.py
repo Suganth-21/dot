@@ -27,5 +27,5 @@ class ReportOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, r: Any) -> "ReportOut":
+    def from_model(cls, r: Any) -> ReportOut:
         return cls(id=r.id, title=r.title, region=r.region, category=r.category, created_at=r.created_at, size=r.size)

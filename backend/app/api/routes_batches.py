@@ -8,7 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.rbac import Role
 from app.deps import get_current_user, get_db, require_role
 from app.models.user import User
-from app.schemas.batch import BatchOut, ChainVerificationOut, RegisterBatchRequest, RegisterBatchResponse, SaleRequest, SearchResultOut
+from app.schemas.batch import (
+    BatchOut,
+    ChainVerificationOut,
+    RegisterBatchRequest,
+    RegisterBatchResponse,
+    SaleRequest,
+    SearchResultOut,
+)
 from app.services import batch_service
 
 router = APIRouter()

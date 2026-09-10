@@ -5,7 +5,15 @@ from sqlalchemy import func, select
 
 from app.core.rbac import Role
 from app.models.drug import Drug
-from app.models.entity import Agent, Distributor, Facility, Manufacturer, Pharmacy, Regulator, Vehicle
+from app.models.entity import (
+    Agent,
+    Distributor,
+    Facility,
+    Manufacturer,
+    Pharmacy,
+    Regulator,
+    Vehicle,
+)
 from app.models.user import User
 from app.seed.reset import reset_demo_data
 

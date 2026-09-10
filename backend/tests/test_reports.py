@@ -46,8 +46,8 @@ async def test_generate_report_with_explicit_fields(client, seeded):
 @pytest.mark.asyncio
 async def test_list_reports_returns_generated_reports_newest_first(client, seeded):
     regulator = await _headers(client, "REGULATOR")
-    first = (await client.post("/api/reports", json={"title": "First"}, headers=regulator)).json()
-    second = (await client.post("/api/reports", json={"title": "Second"}, headers=regulator)).json()
+    await client.post("/api/reports", json={"title": "First"}, headers=regulator)
+    await client.post("/api/reports", json={"title": "Second"}, headers=regulator)
 
     resp = await client.get("/api/reports", headers=regulator)
     assert resp.status_code == 200

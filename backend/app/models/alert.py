@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
-from app.models.enums import AlertStatus, AlertType, AlertSeverity, DrugCategory
+from app.models.enums import AlertSeverity, AlertStatus, AlertType, DrugCategory
 
 _alert_type_enum = Enum(AlertType, name="alert_type_enum", values_callable=lambda e: [m.value for m in e])
 _alert_severity_enum = Enum(

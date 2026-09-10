@@ -98,7 +98,7 @@ async def run_forever() -> None:
         while True:
             try:
                 await _tick()
-            except Exception:  # noqa: BLE001 — one bad tick must never kill the loop
+            except Exception:
                 logger.exception("gps_simulator tick failed")
             await asyncio.sleep(TICK_SECONDS)
     except asyncio.CancelledError:

@@ -22,7 +22,7 @@ BUILDPHASES.md's Phase 7 implementation notes).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,7 +56,7 @@ async def notify(
         kind=kind,
         link=link,
         read=False,
-        ts=datetime.now(timezone.utc),
+        ts=datetime.now(UTC),
     )
     await notification_repo.create(session, notification)
     return notification

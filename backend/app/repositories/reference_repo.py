@@ -8,7 +8,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.drug import Drug
-from app.models.entity import Agent, Distributor, Facility, Manufacturer, Pharmacy, Regulator, Vehicle
+from app.models.entity import (
+    Agent,
+    Distributor,
+    Facility,
+    Manufacturer,
+    Pharmacy,
+    Regulator,
+    Vehicle,
+)
 
 
 async def list_pharmacies(session: AsyncSession) -> list[Pharmacy]:

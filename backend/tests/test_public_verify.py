@@ -64,6 +64,7 @@ async def test_verify_destroyed_batch_does_not_raise_a_reentry_alert(client, see
     """ARCHITECTURE.md §7.3: "Public verification of a destroyed batch
     returns the red verdict but does NOT raise a REENTRY alert."""
     from sqlalchemy import select
+
     from app.models.alert import Alert
 
     await client.get(f"/api/public/verify/{DESTROYED_BATCH}")
@@ -105,6 +106,7 @@ async def test_report_suspicious_without_batch_id(client, seeded):
 @pytest.mark.asyncio
 async def test_report_suspicious_on_destroyed_batch_raises_critical_patient_report_alert(client, seeded, db_session):
     from sqlalchemy import select
+
     from app.models.alert import Alert
 
     resp = await client.post(
@@ -125,6 +127,7 @@ async def test_report_suspicious_on_destroyed_batch_raises_critical_patient_repo
 @pytest.mark.asyncio
 async def test_report_suspicious_on_genuine_batch_raises_high_severity_alert(client, seeded, db_session):
     from sqlalchemy import select
+
     from app.models.alert import Alert
 
     resp = await client.post(

@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import redis.asyncio as redis_asyncio
@@ -34,8 +34,8 @@ logger = logging.getLogger("dot.realtime")
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
-        f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.") + \
+        f"{datetime.now(UTC).microsecond // 1000:03d}Z"
 
 
 class RealtimeHub:
@@ -124,11 +124,11 @@ class RealtimeHub:
                 for ws in list(self._local_subscribers.get(channel, [])):
                     try:
                         await ws.send_text(payload)
-                    except Exception:  # noqa: BLE001 — a dead socket is cleaned up on its own disconnect handler
+                    except Exception:
                         logger.debug("dropping a send to a socket that looks dead", exc_info=True)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — the listen loop must never silently die
+        except Exception:
             logger.exception("realtime listen loop crashed")
 
 
