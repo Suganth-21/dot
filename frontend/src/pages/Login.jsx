@@ -1,22 +1,38 @@
-import React from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { ArrowRight, ShieldCheck, Store, Truck, Bike, Factory, Landmark } from "lucide-react";
 import { Logo } from "../components/layout/Logo";
 import { Card, Button, Input, Label } from "../components/ui";
 import { useAuth, DEMO_ACCOUNTS } from "../store/authStore";
+import SplashIntro from "../components/SplashIntro";
 
 const ICONS = { RETAILER: Store, DISTRIBUTOR: Truck, PICKUP_AGENT: Bike, MANUFACTURER: Factory, REGULATOR: Landmark };
 
 export default function Login() {
   const nav = useNavigate();
   const { login } = useAuth();
+  const [splash, setSplash] = useState(null);
+  const [hoveredIdx, setHoveredIdx] = useState(null);
 
-  const quickLogin = (acc) => { login(acc); nav(acc.home); };
+  const quickLogin = (acc) => { 
+    login(acc); 
+    setSplash({ color: acc.themeColor, home: acc.home }); 
+  };
 
   return (
-    <div className="min-h-screen bg-clay-bg">
-      <div className="mx-auto grid min-h-screen max-w-6xl grid-cols-1 items-center gap-10 px-6 py-10 lg:grid-cols-2">
+    <>
+      <AnimatePresence mode="wait">
+        {splash && (
+          <SplashIntro 
+            key="splash" 
+            color={splash.color} 
+            onFinish={() => nav(splash.home)} 
+          />
+        )}
+      </AnimatePresence>
+      <div className="min-h-screen bg-clay-bg">
+        <div className="mx-auto grid min-h-screen max-w-6xl grid-cols-1 items-center gap-10 px-6 py-10 lg:grid-cols-2">
         {/* Left — brand */}
         <motion.div initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.5 }}>
           <Logo size="xl" />
@@ -68,11 +84,20 @@ export default function Login() {
                     key={acc.role}
                     initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 + i * 0.05 }}
                     onClick={() => quickLogin(acc)}
+                    onMouseEnter={() => setHoveredIdx(i)}
+                    onMouseLeave={() => setHoveredIdx(null)}
                     data-testid={`quick-login-${acc.role.toLowerCase()}`}
-                    className="group flex w-full items-center gap-3 rounded-2xl bg-clay-surface p-3 text-left ring-1 ring-clay-line hover:bg-clay-line transition-all"
+                    className="group flex w-full items-center gap-3 rounded-2xl bg-clay-surface p-3 text-left transition-all"
+                    style={{
+                      border: `1px solid ${hoveredIdx === i ? acc.themeColor : 'var(--clay-line, #e2e8f0)'}`,
+                      boxShadow: hoveredIdx === i ? `0 0 0 1px ${acc.themeColor}` : undefined
+                    }}
                   >
-                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-clay ring-1 ring-clay-line">
-                      <Icon className="h-5 w-5 text-accent-ink" />
+                    <span 
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-full shadow-clay"
+                      style={{ backgroundColor: `${acc.themeColor}20`, border: `1px solid ${acc.themeColor}40` }}
+                    >
+                      <Icon className="h-5 w-5" style={{ color: acc.themeColor }} />
                     </span>
                     <span className="flex-1">
                       <span className="block text-sm font-bold text-clay-ink">{acc.label}</span>
@@ -87,5 +112,6 @@ export default function Login() {
         </motion.div>
       </div>
     </div>
+    </>
   );
 }

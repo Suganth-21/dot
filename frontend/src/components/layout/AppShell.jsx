@@ -5,12 +5,13 @@ import { Menu, X, LogOut, RotateCcw, ChevronDown, User } from "lucide-react";
 import { Logo } from "./Logo";
 import NotificationBell from "./NotificationBell";
 import CommandPalette from "./CommandPalette";
-import { useAuth } from "../../store/authStore";
+import { useAuth, ROLE_COLORS } from "../../store/authStore";
 import { resetDemo } from "../../services/db";
 import { cn } from "../../lib/utils";
 import { toast } from "sonner";
 
 export default function AppShell({ navItems, role, roleHome, roleLabel, institutional }) {
+  const themeColor = ROLE_COLORS[role];
   const [mobileNav, setMobileNav] = useState(false);
   const [menu, setMenu] = useState(false);
   const { user, logout } = useAuth();
@@ -42,7 +43,7 @@ export default function AppShell({ navItems, role, roleHome, roleLabel, institut
             <Menu className="h-6 w-6 text-clay-ink" />
           </button>
           <div className="flex items-center gap-2.5">
-            <Logo size="md" />
+            <Logo size="md" dotColor={themeColor} />
             <span className="hidden text-xs font-semibold text-clay-muted sm:inline">{roleLabel}</span>
           </div>
           <nav className="ml-4 hidden items-center gap-1 lg:flex">
@@ -92,7 +93,7 @@ export default function AppShell({ navItems, role, roleHome, roleLabel, institut
             <motion.div initial={{ x: -300 }} animate={{ x: 0 }} exit={{ x: -300 }} transition={{ type: "spring", stiffness: 320, damping: 30 }}
               className="absolute inset-y-0 left-0 w-72 bg-clay-card p-4 shadow-pop">
               <div className="mb-6 flex items-center justify-between">
-                <Logo size="md" />
+                <Logo size="md" dotColor={themeColor} />
                 <button onClick={() => setMobileNav(false)}><X className="h-6 w-6 text-clay-ink" /></button>
               </div>
               <div className="space-y-1">
