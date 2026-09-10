@@ -1,0 +1,31 @@
+{
+  "summary": "Comprehensive frontend-only testing of DOT reverse-supply-chain compliance platform across all 6 interfaces. All 5 critical never-cut flows PASS: (1) Pharmacy inventory + return creation flow with tracking map/stepper/timeline, (2) Distributor dispute gate (banner appears, forward-btn disabled, resolution required, unlock+forward works), (3) Re-entry alert firing end-to-end (add B04 -> toast + /pharmacy/alerts + appears in regulator reg-live-alerts feed), (4) Patient Shield all three verdicts render correct testids (result-genuine, result-notfound, result-destroyed), (5) Manufacturer certificate binding enforcement (cert-blocked-banner + disabled upload for non-eligible batch). Login page + all 5 quick-logins route correctly. Cross-cutting features (notification-bell, command-palette Ctrl+K search, profile-menu-trigger) work. Agent mobile flow (stop-card -> arrived-btn -> counted-qty -> pickup-complete) works. Regulator dashboard/alerts/batches audit/entities/analytics/reports render.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "QrScanner (/verify/scan)", "issue": "Throws uncaught runtime errors on every demo-scan click: 'Cannot stop, scanner is not running or paused.' and 'The play() request was interrupted because the media was removed from the document.' In development the CRA error overlay covers the result card (result-destroyed etc) though the DOM still renders correctly beneath. Production builds would not show overlay but console pollution + potential white-screen risk on strict clients remains. Root cause: html5-qrcode Html5Qrcode.stop() called in a cleanup effect regardless of whether scanning was actually started, and video element play() promise races unmount. Fix: guard stop() with running-state check; abort the play() promise on unmount.", "selector": "/verify/scan demo-scan-* buttons", "priority": "MEDIUM"},
+      {"component": "Recharts XAxis/YAxis", "issue": "React warns 'Support for defaultProps will be removed from function components' — recharts 2.x with React 18. Cosmetic warning only.", "selector": "XAxis/YAxis in dashboards", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Regulator dashboard initial paint", "issues": ["KPI cards briefly show skeleton loaders then populate — acceptable but could be tightened."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Wrap Html5Qrcode.stop() in QrScanner cleanup with a running-state guard to eliminate 'Cannot stop, scanner is not running or paused' runtime errors on /verify/scan (and any other scanner). Also guard videoRef.play() with an AbortController / mounted-ref to avoid 'play() request was interrupted' errors. This will remove the dev-overlay covering result-destroyed and improve production console cleanliness.",
+    "Optional: upgrade recharts (or pass props as defaults) to silence React 18 defaultProps warnings."
+  ],
+  "critical_code_review_comments": [
+    "Scanner lifecycle in QrScanner component needs guarding against double-stop / stop-before-start (see html5-qrcode Html5Qrcode state machine).",
+    "reset-demo-btn is in a popover controlled by setMenu — behaved intermittently in automation; consider aria-menu + keeping menu open until item click for better testability.",
+    "Add-Stock form auto-fill from demo scan does not populate quantity, but Register button attempts submit and shows 'Fill batch, drug and quantity' toast. The re-entry alert only fires after quantity is entered — this is fine for humans but the review request implied auto-fill would submit; consider either pre-filling a default qty in demo-scan payload or documenting the manual step."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a", "frontend": "~97%"},
+  "seed_data_creation": "None — uses localStorage seed. Created transient returns (ret_*) during testing; localStorage per browser context so isolated.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All 5 never-cut critical flows verified working. Only real issue is QrScanner cleanup runtime errors on /verify/scan which surface a dev-only error overlay that visually covers the result-destroyed card (data still renders). If main agent fixes QrScanner unmount, re-run only the /verify/scan flow. All quick-login testids present; use them (not email/password). localStorage state is per browser context — combine multi-role flows in one script (as done here) rather than sequential logins across contexts.",
+  "rca of the issue": "QrScanner runtime errors: html5-qrcode's stop() throws when called on a scanner that never fully entered SCANNING state; combined with React StrictMode-style unmounts and rapid navigation (demo-scan click -> setResult -> switches to result panel), the scanner cleanup runs on a partially-initialized instance. Fix by checking html5QrCode.getState() before calling stop(), or wrapping stop() in try/catch and ignoring the NOT_STARTED error."
+}
