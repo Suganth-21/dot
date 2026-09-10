@@ -3,15 +3,16 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { Logo } from "./Logo";
 import NotificationBell from "./NotificationBell";
-import { useAuth } from "../../store/authStore";
+import { useAuth, ROLE_COLORS } from "../../store/authStore";
 
 export default function AgentShell({ navItems }) {
   const { user, logout } = useAuth();
   const nav = useNavigate();
+  const themeColor = ROLE_COLORS["PICKUP_AGENT"];
   return (
     <div className="mx-auto flex min-h-screen max-w-md flex-col bg-clay-bg">
       <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-clay-line/70 bg-clay-bg/85 px-4 backdrop-blur-xl">
-        <Logo size="sm" />
+        <Logo size="sm" dotColor={themeColor} />
         <div className="flex items-center gap-2">
           <NotificationBell role="PICKUP_AGENT" />
           <button onClick={() => { logout(); nav("/login"); }} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-accent text-xs font-bold text-white" data-testid="agent-avatar">
