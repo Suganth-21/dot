@@ -15,13 +15,19 @@ from app.schemas.reference import DistributorOut, PharmacyOut
 
 
 class CreateReturnRequest(BaseModel):
-    """ARCHITECTURE.md §8.3: `POST /api/returns`, body `{batchId, quantity,
-    distributorId, reason, photoHash}` — matching `returnService.js`'s
-    `createReturn(batchId, data, actor)` field for field."""
+    """`POST /api/returns`, body `{batchId, quantity, reason, photoHash}`.
+
+    No `distributorId` — the finalized flow auto-assigns the nearest
+    available pickup agent (and their distributor) by location the instant
+    a return is created (`return_service.create_return` calls
+    `pickup_service.pick_nearest_agent`), replacing the retailer picking a
+    distributor by name. `distributorId` is still accepted and silently
+    ignored (pydantic drops unknown fields by default) so any caller still
+    sending the old field shape doesn't hard-fail.
+    """
 
     batch_id: str = Field(validation_alias="batchId")
     quantity: int = Field(gt=0)
-    distributor_id: str = Field(validation_alias="distributorId")
     reason: ReturnReason
     photo_hash: str | None = Field(default=None, validation_alias="photoHash")
 

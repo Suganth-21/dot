@@ -33,7 +33,7 @@ from app.models.enums import (
 )
 from app.models.return_ import Return
 from app.models.user import User
-from app.repositories import batch_repo, event_repo, reference_repo, return_repo
+from app.repositories import batch_repo, event_repo, reference_repo, return_repo, route_repo
 from app.schemas.alert import AlertOut
 from app.schemas.batch import BatchOut, EventOut
 from app.schemas.reference import DistributorOut, PharmacyOut
@@ -52,6 +52,7 @@ from app.services import (
     event_service,
     fraud_service,
     notification_service,
+    pickup_service,
 )
 
 # ARCHITECTURE.md §5.2: legacy aliases accepted on input, never stored or emitted.
@@ -111,8 +112,18 @@ def assert_not_disputed(ret: Return | None) -> None:
         )
 
 
-def _check_read_scope(current_user: User, ret: Return, batch: Batch | None) -> None:
-    """ARCHITECTURE.md §6.5 "Returns — read" row."""
+async def _check_read_scope(session: AsyncSession, current_user: User, ret: Return, batch: Batch | None) -> None:
+    """ARCHITECTURE.md §6.5 "Returns — read" row.
+
+    PICKUP_AGENT's documented scope is "own route stops": this used to
+    unconditionally reject the role with a comment claiming routes didn't
+    exist yet — stale (the pickup pipeline has been live for a while) and,
+    as of the agent Stop page now fetching the expected batch/drug/quantity
+    straight off the return (`pages/agent.jsx`'s `Stop()`), a real bug:
+    every agent request for their own assigned return's details was a
+    guaranteed 403, silently breaking the on-scan verification and quantity
+    pre-fill it depends on.
+    """
     role = current_user.role
     if role == Role.REGULATOR:
         return
@@ -127,8 +138,10 @@ def _check_read_scope(current_user: User, ret: Return, batch: Batch | None) -> N
         and ret.status == ReturnStatus.FORWARDED
     ):
         return
-    # PICKUP_AGENT's documented scope is "own route stops" — routes don't
-    # exist until Phase 5, so an agent has no legitimate return access yet.
+    if role == Role.PICKUP_AGENT and ret.route_id is not None:
+        route = await route_repo.get_by_id(session, ret.route_id)
+        if route is not None and route.agent_id == current_user.entity_id:
+            return
     raise Forbidden("You do not have access to this return.", code="NOT_YOUR_RETURN")
 
 
@@ -170,7 +183,7 @@ async def get_return(session: AsyncSession, current_user: User, return_id: str) 
         raise NotFound("Return not found.", code="RETURN_NOT_FOUND")
 
     batch = await batch_repo.get_by_id(session, ret.batch_id)
-    _check_read_scope(current_user, ret, batch)
+    await _check_read_scope(session, current_user, ret, batch)
 
     batch_out: BatchOut | None = await batch_service.to_batch_out(session, batch) if batch is not None else None
     pharmacy = await reference_repo.get_pharmacy(session, ret.pharmacy_id)
@@ -219,16 +232,26 @@ async def create_return(session: AsyncSession, actor: User, payload: CreateRetur
             details={"held": batch.quantity, "requested": payload.quantity},
         )
 
-    distributor = await reference_repo.get_distributor(session, payload.distributor_id)
-    if distributor is None:
-        raise NotFound("Distributor not found.", code="DISTRIBUTOR_NOT_FOUND")
+    pharmacy = await reference_repo.get_pharmacy(session, actor.entity_id)
+    if pharmacy is None:
+        raise NotFound("Pharmacy not found.", code="PHARMACY_NOT_FOUND")
+
+    # Finalized flow: no distributor picker — the nearest available pickup
+    # agent (and their distributor) is assigned by location the instant
+    # the return is created, same as pickup_service._build_route's own
+    # nearest-neighbour stop ordering. Resolved *before* the Return row is
+    # built since `distributor_id` is a required column on it.
+    assignment = await pickup_service.pick_nearest_agent(session, pharmacy)
+    if assignment is None:
+        raise Conflict("No pickup agent is currently available.", code="NO_AGENT_AVAILABLE")
+    agent, vehicle, distributor = assignment
 
     now = datetime.now(UTC)
     ret = Return(
         id=f"ret_{uuid.uuid4().hex[:16]}",
         batch_id=batch.id,
         pharmacy_id=batch.pharmacy_id,
-        distributor_id=payload.distributor_id,
+        distributor_id=distributor.id,
         drug_name=batch.drug_name,
         category=batch.category,
         quantity_claimed=payload.quantity,
@@ -254,7 +277,6 @@ async def create_return(session: AsyncSession, actor: User, payload: CreateRetur
     # holder doesn't actually move until the distributor confirms receipt.
     batch.updated_at = now
 
-    pharmacy = await reference_repo.get_pharmacy(session, actor.entity_id)
     event = await event_service.append(
         session,
         batch=batch,
@@ -263,17 +285,22 @@ async def create_return(session: AsyncSession, actor: User, payload: CreateRetur
         actor_name=actor.name,
         actor_role=actor.role.value,
         meta={"quantity": payload.quantity, "reason": payload.reason.value, "photoHash": payload.photo_hash},
-        gps=(pharmacy.lat, pharmacy.lng) if pharmacy else None,
+        gps=(pharmacy.lat, pharmacy.lng),
     )
 
+    # Auto-creates the (not-yet-dispatched) pickup route for the agent just
+    # chosen above — the agent still taps "Start Route" themselves, a real,
+    # visible action; nothing here dispatches it.
+    await pickup_service.build_auto_route(session, distributor=distributor, agent=agent, vehicle=vehicle, ret=ret)
+
     await notification_service.notify(
-        session, Role.DISTRIBUTOR, "New return in inbox",
-        f"{batch.drug_name} from {pharmacy.name if pharmacy else 'a pharmacy'}",
-        NotificationKind.info, "/distributor/returns/inbox",
+        session, Role.DISTRIBUTOR, "Pickup auto-assigned to your fleet",
+        f"{batch.drug_name} from {pharmacy.name} — {agent.name} assigned",
+        NotificationKind.info, "/distributor/pickups",
     )
     await notification_service.notify(
         session, Role.RETAILER, "Return created",
-        f"Pickup requested from {distributor.name}",
+        f"{agent.name} assigned — tracking live",
         NotificationKind.success, f"/pharmacy/returns/{ret.id}/track",
     )
 

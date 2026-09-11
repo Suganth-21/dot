@@ -55,7 +55,12 @@ async def test_retailer_can_create_valid_return(client, seeded):
     assert body["quantityClaimed"] == 50
     assert body["quantityReceived"] is None
     assert body["pickedQuantity"] is None
-    assert body["status"] == "REQUESTED"
+    # Auto-assigned straight to SCHEDULED (pickup_service.pick_nearest_agent
+    # + build_auto_route, called from within create_return) — a return no
+    # longer waits in REQUESTED for a distributor to notice and build a
+    # route by hand.
+    assert body["status"] == "SCHEDULED"
+    assert body["routeId"] is not None
     assert body["reason"] == "EXPIRED"
 
 
@@ -785,16 +790,19 @@ async def test_full_return_flow_chain_still_verifies(client, seeded):
 
 @pytest.mark.asyncio
 async def test_demo_path_create_inbox_dispute_gate(client, seeded):
-    # 1-2: Pharmacy already has stock (seeded A17); Start Return.
+    # 1-2: Pharmacy already has stock (seeded A17); Start Return — the
+    # nearest available pickup agent is auto-assigned immediately, so this
+    # is already SCHEDULED (with a route built) rather than sitting in
+    # REQUESTED for a distributor to notice and build a route by hand.
     retailer = await _headers(client, "RETAILER")
     created_resp = await _create_return(client, retailer, quantity=50, reason="EXPIRED")
     assert created_resp.status_code == 200
     created = created_resp.json()
-    assert created["status"] == "REQUESTED"
+    assert created["status"] == "SCHEDULED"
 
-    # 3: Return appears in the distributor's inbox.
+    # 3: Return appears in the distributor's inbox (now already scheduled).
     distributor = await _headers(client, "DISTRIBUTOR")
-    inbox_resp = await client.get("/api/returns?distributorId=dist_1&status=REQUESTED", headers=distributor)
+    inbox_resp = await client.get("/api/returns?distributorId=dist_1&status=SCHEDULED", headers=distributor)
     assert any(r["id"] == created["id"] for r in inbox_resp.json())
 
     # 6: Distributor records a mismatching quantity -> dispute gate fires.

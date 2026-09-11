@@ -26,7 +26,7 @@ from app.models.route import Route, RouteStop
 from app.models.user import User
 from app.repositories import batch_repo, reference_repo, return_repo, route_repo
 from app.schemas.reference import AgentOut, VehicleOut
-from app.schemas.route import CreateRouteRequest, DispatchResponse, FleetOut, RouteOut
+from app.schemas.route import CreateRouteRequest, DispatchResponse, FleetOut, RouteOut, RouteStopOut
 from app.services import event_service, notification_service
 
 
@@ -35,11 +35,26 @@ def _dist2(a: dict, b: dict) -> float:
 
 
 async def _publish_stop_transition(route: Route, stop_index: int, status: str, counted: int | None = None) -> None:
-    """ARCHITECTURE.md §9.3's `route.stop` message shape."""
+    """ARCHITECTURE.md §9.3's `route.stop` message shape.
+
+    Also fanned out to `fleet:{distributor_id}`/`fleet:all` — not just
+    `route:{id}` — for the same reason gps_simulator's ticks are: a client
+    only ever subscribes to a specific `route:{id}` channel via
+    subscribeActiveRoutes(), which only runs at bootstrap or after that
+    same browser's own local route mutation. A distributor/regulator/
+    manufacturer session already open when a route is created and
+    dispatched by someone else (or on another device) never gets added to
+    that per-route channel, so arrive/pickup would otherwise never live-
+    update it — exactly the "stuck on stale status until a manual reload"
+    lag this fixes. The permanent fleet:* subscriptions those roles hold
+    from connect time need no such per-route bookkeeping.
+    """
     data = {"routeId": route.id, "stopIndex": stop_index, "status": status}
     if counted is not None:
         data["counted"] = counted
     await hub.publish(f"route:{route.id}", "route.stop", data)
+    await hub.publish(f"fleet:{route.distributor_id}", "route.stop", data)
+    await hub.publish("fleet:all", "route.stop", data)
 
 
 def _check_read_scope(current_user: User, route: Route, stops: list[RouteStop]) -> None:
@@ -58,7 +73,11 @@ def _check_read_scope(current_user: User, route: Route, stops: list[RouteStop]) 
 
 async def _to_route_out(session: AsyncSession, route: Route) -> RouteOut:
     stops = await route_repo.list_stops(session, route.id)
-    return RouteOut.from_model(route, stops)
+    stop_outs = []
+    for stop in stops:
+        ret = await return_repo.get_by_id(session, stop.return_id) if stop.return_id else None
+        stop_outs.append(RouteStopOut.from_model(stop, ret))
+    return RouteOut.from_model(route, stop_outs)
 
 
 async def list_routes(
@@ -99,7 +118,7 @@ async def get_route(session: AsyncSession, current_user: User, route_id: str) ->
         raise NotFound("Route not found.", code="ROUTE_NOT_FOUND")
     stops = await route_repo.list_stops(session, route.id)
     _check_read_scope(current_user, route, stops)
-    return RouteOut.from_model(route, stops)
+    return await _to_route_out(session, route)
 
 
 async def list_fleet(session: AsyncSession, distributor_id: str | None) -> FleetOut:
@@ -109,6 +128,125 @@ async def list_fleet(session: AsyncSession, distributor_id: str | None) -> Fleet
         vehicles=[VehicleOut.model_validate(v) for v in vehicles],
         agents=[AgentOut.model_validate(a) for a in agents],
     )
+
+
+async def _build_route(
+    session: AsyncSession, *, distributor, agent: Agent, vehicle: Vehicle, returns: list, manual_order: bool,
+) -> Route:
+    """Shared route construction — path/stop-ordering/persistence and the
+    matching `ret.status=SCHEDULED`/`ret.route_id` mutation. No auth or
+    eligibility checks here — callers own those. Used by both the
+    distributor-initiated multi-return `create_route` below and
+    `build_auto_route`, the retailer-return-triggered single-return
+    equivalent called from `return_service.create_return`.
+    """
+    stop_specs = []
+    for ret in returns:
+        pharmacy = await reference_repo.get_pharmacy(session, ret.pharmacy_id)
+        if pharmacy is None:
+            continue
+        stop_specs.append({
+            "pharmacy_id": pharmacy.id, "pharmacy_name": pharmacy.name, "address": pharmacy.address,
+            "lat": pharmacy.lat, "lng": pharmacy.lng, "return_id": ret.id,
+        })
+
+    if manual_order:
+        ordered = stop_specs
+    else:
+        # Greedy nearest-neighbour from the distributor's warehouse — matches
+        # pickupService.js's `createRoute` exactly.
+        ordered = []
+        cur = {"lat": distributor.lat, "lng": distributor.lng}
+        pool = list(stop_specs)
+        while pool:
+            pool.sort(key=lambda s: _dist2(cur, s))
+            nxt = pool.pop(0)
+            ordered.append(nxt)
+            cur = nxt
+
+    now = datetime.now(UTC)
+    path = [{"lat": distributor.lat, "lng": distributor.lng}] + [{"lat": s["lat"], "lng": s["lng"]} for s in ordered]
+    route = Route(
+        id=f"route_{uuid.uuid4().hex[:16]}",
+        distributor_id=distributor.id, agent_id=agent.id, agent_name=agent.name,
+        vehicle_id=vehicle.id, vehicle_reg=vehicle.reg_no,
+        status=RouteStatus.planned, running=False, path=path,
+        seg_index=0, seg_t=0.0, pos_lat=distributor.lat, pos_lng=distributor.lng,
+        eta_min=len(ordered) * 12, created_at=now,
+    )
+    await route_repo.create(session, route)
+    await session.flush()
+
+    for i, spec in enumerate(ordered):
+        stop = RouteStop(
+            id=f"stop_{uuid.uuid4().hex[:16]}", route_id=route.id, return_id=spec["return_id"],
+            pharmacy_id=spec["pharmacy_id"], pharmacy_name=spec["pharmacy_name"], address=spec["address"],
+            lat=spec["lat"], lng=spec["lng"], stop_order=i + 1, status=StopStatus.PENDING,
+            expected_batches=1, counted=None,
+        )
+        await route_repo.create_stop(session, stop)
+
+    for ret in returns:
+        ret.status = ReturnStatus.SCHEDULED
+        ret.route_id = route.id
+        ret.updated_at = now
+
+    return route
+
+
+async def pick_nearest_agent(session: AsyncSession, pharmacy) -> tuple[Agent, Vehicle, object] | None:
+    """The finalized flow's auto-assignment: nearest available agent (by
+    straight-line distance from the pharmacy to that agent's distributor
+    depot — the same approximation `_build_route`'s own nearest-neighbour
+    stop ordering already uses, and agents/vehicles carry no location of
+    their own until dispatched at least once) with an idle vehicle from
+    that same distributor's fleet. Falls back to the nearest agent/vehicle
+    pair regardless of idle status if none are idle, rather than failing a
+    pickup outright — a small dataset with every agent momentarily busy
+    should still get a return moving, not stuck.
+    """
+    distributors = {d.id: d for d in await reference_repo.list_distributors(session)}
+    agents = await reference_repo.list_agents(session, None)
+    vehicles = await reference_repo.list_vehicles(session, None)
+
+    vehicles_by_distributor: dict[str, list[Vehicle]] = {}
+    for v in vehicles:
+        vehicles_by_distributor.setdefault(v.distributor_id, []).append(v)
+
+    def best_of(agent_pool: list[Agent]) -> tuple[float, Agent, Vehicle, object] | None:
+        best = None
+        for a in agent_pool:
+            distributor = distributors.get(a.distributor_id)
+            if distributor is None:
+                continue
+            pool = vehicles_by_distributor.get(a.distributor_id, [])
+            idle_vehicles = [v for v in pool if v.status == AgentStatus.idle]
+            vehicle = (idle_vehicles or pool or [None])[0]
+            if vehicle is None:
+                continue
+            d2 = _dist2({"lat": pharmacy.lat, "lng": pharmacy.lng}, {"lat": distributor.lat, "lng": distributor.lng})
+            if best is None or d2 < best[0]:
+                best = (d2, a, vehicle, distributor)
+        return best
+
+    idle_agents = [a for a in agents if a.status == AgentStatus.idle]
+    chosen = best_of(idle_agents) or best_of(agents)
+    if chosen is None:
+        return None
+    _, agent, vehicle, distributor = chosen
+    return agent, vehicle, distributor
+
+
+async def build_auto_route(session: AsyncSession, *, distributor, agent: Agent, vehicle: Vehicle, ret) -> Route:
+    """Single-return wrapper around `_build_route` for `pick_nearest_agent`'s
+    result — always `manual_order=True` since there's exactly one stop, so
+    the nearest-neighbour ordering logic has nothing to do."""
+    route = await _build_route(session, distributor=distributor, agent=agent, vehicle=vehicle, returns=[ret], manual_order=True)
+    await notification_service.notify(
+        session, Role.PICKUP_AGENT, "New route assigned", f"Pickup: {ret.drug_name}",
+        NotificationKind.info, "/agent/today",
+    )
+    return route
 
 
 async def create_route(session: AsyncSession, actor: User, payload: CreateRouteRequest) -> RouteOut:
@@ -139,59 +277,10 @@ async def create_route(session: AsyncSession, actor: User, payload: CreateRouteR
     if not returns:
         raise ValidationFailed("At least one return is required to create a route.", code="NO_RETURNS_SELECTED")
 
-    stop_specs = []
-    for ret in returns:
-        pharmacy = await reference_repo.get_pharmacy(session, ret.pharmacy_id)
-        if pharmacy is None:
-            continue
-        stop_specs.append({
-            "pharmacy_id": pharmacy.id, "pharmacy_name": pharmacy.name, "address": pharmacy.address,
-            "lat": pharmacy.lat, "lng": pharmacy.lng, "return_id": ret.id,
-        })
-
-    if payload.manual_order:
-        ordered = stop_specs
-    else:
-        # Greedy nearest-neighbour from the distributor's warehouse — matches
-        # pickupService.js's `createRoute` exactly.
-        ordered = []
-        cur = {"lat": distributor.lat, "lng": distributor.lng}
-        pool = list(stop_specs)
-        while pool:
-            pool.sort(key=lambda s: _dist2(cur, s))
-            nxt = pool.pop(0)
-            ordered.append(nxt)
-            cur = nxt
-
-    now = datetime.now(UTC)
-    path = [{"lat": distributor.lat, "lng": distributor.lng}] + [{"lat": s["lat"], "lng": s["lng"]} for s in ordered]
-    route = Route(
-        id=f"route_{uuid.uuid4().hex[:16]}",
-        distributor_id=payload.distributor_id, agent_id=agent.id, agent_name=agent.name,
-        vehicle_id=vehicle.id, vehicle_reg=vehicle.reg_no,
-        status=RouteStatus.planned, running=False, path=path,
-        seg_index=0, seg_t=0.0, pos_lat=distributor.lat, pos_lng=distributor.lng,
-        eta_min=len(ordered) * 12, created_at=now,
-    )
-    await route_repo.create(session, route)
-    await session.flush()
-
-    for i, spec in enumerate(ordered):
-        stop = RouteStop(
-            id=f"stop_{uuid.uuid4().hex[:16]}", route_id=route.id, return_id=spec["return_id"],
-            pharmacy_id=spec["pharmacy_id"], pharmacy_name=spec["pharmacy_name"], address=spec["address"],
-            lat=spec["lat"], lng=spec["lng"], stop_order=i + 1, status=StopStatus.PENDING,
-            expected_batches=1, counted=None,
-        )
-        await route_repo.create_stop(session, stop)
-
-    for ret in returns:
-        ret.status = ReturnStatus.SCHEDULED
-        ret.route_id = route.id
-        ret.updated_at = now
+    route = await _build_route(session, distributor=distributor, agent=agent, vehicle=vehicle, returns=returns, manual_order=payload.manual_order)
 
     await notification_service.notify(
-        session, Role.PICKUP_AGENT, "New route assigned", f"{len(ordered)} stops assigned",
+        session, Role.PICKUP_AGENT, "New route assigned", f"{len(returns)} stops assigned",
         NotificationKind.info, "/agent/today",
     )
 
@@ -282,10 +371,23 @@ async def agent_pickup(session: AsyncSession, actor: User, route_id: str, stop_i
     if next_stop is not None and next_stop.status == StopStatus.PENDING:
         next_stop.status = StopStatus.CURRENT
     elif next_stop is None:
-        # ARCHITECTURE.md §5.3: "completed (last stop DONE)" — stop-driven,
-        # never position-driven (the simulator itself never marks this).
-        route.status = RouteStatus.completed
-        route.running = False
+        # Last stop — ARCHITECTURE.md §5.3's "completed (last stop DONE)"
+        # stays stop-driven for the *stop* itself (already set above), but
+        # the route doesn't teleport home instantly: one more waypoint
+        # (the warehouse) is appended and the route stays running so the
+        # vehicle visibly drives back. gps_simulator's tick loop finalizes
+        # `status=completed`/`running=False` once that drive-home leg
+        # actually finishes — see its module docstring for why that one
+        # position-driven exception is safe (gated on every stop already
+        # being DONE, which is true here).
+        distributor = await reference_repo.get_distributor(session, route.distributor_id)
+        if distributor is not None:
+            route.path = [*route.path, {"lat": distributor.lat, "lng": distributor.lng}]
+            route.seg_index = len(route.path) - 2
+            route.seg_t = 0.0
+        else:
+            route.status = RouteStatus.completed
+            route.running = False
 
     if stop.return_id:
         ret = await return_repo.get_for_update(session, stop.return_id)

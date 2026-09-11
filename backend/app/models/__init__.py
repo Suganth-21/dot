@@ -12,6 +12,7 @@ from app.models.entity import (
     Vehicle,
 )
 from app.models.event import Event
+from app.models.facility_run import FacilityRun
 from app.models.notification import Notification
 from app.models.patient_report import PatientReport
 from app.models.refresh_token import RefreshToken
@@ -30,6 +31,7 @@ __all__ = [
     "Drug",
     "Event",
     "Facility",
+    "FacilityRun",
     "Manufacturer",
     "Notification",
     "PatientReport",

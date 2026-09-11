@@ -42,6 +42,7 @@ from app.models.entity import (
 )
 from app.models.enums import AgentStatus, DrugCategory
 from app.models.event import Event
+from app.models.facility_run import FacilityRun
 from app.models.notification import Notification
 from app.models.patient_report import PatientReport
 from app.models.refresh_token import RefreshToken
@@ -50,7 +51,7 @@ from app.models.return_ import Return
 from app.models.route import Route, RouteStop
 from app.models.sale import Sale
 from app.models.user import User
-from app.seed import seed_batches, seed_data
+from app.seed import seed_batches, seed_data, seed_returns
 
 
 async def _truncate_all_tables(session: AsyncSession) -> None:
@@ -69,6 +70,7 @@ async def _truncate_all_tables(session: AsyncSession) -> None:
     await session.execute(RouteStop.__table__.delete())
     await session.execute(Return.__table__.delete())
     await session.execute(Route.__table__.delete())
+    await session.execute(FacilityRun.__table__.delete())
     await session.execute(Event.__table__.delete())
     await session.execute(Sale.__table__.delete())
     await session.execute(Batch.__table__.delete())
@@ -137,13 +139,15 @@ def _seed_demo_users(session: AsyncSession) -> None:
 
 
 async def reset_demo_data(session: AsyncSession) -> None:
-    """Truncates every Phase 1-4-owned table and re-seeds deterministically
-    (Phase 3's `alerts`/`patient_reports` and Phase 4's `returns`/
-    `notifications` reset to empty — none of the four are seeded with
-    historical rows, only the entities/batches/events are). Runs as a
-    single transaction: a failure partway
-    through rolls back rather than leaving a half-seeded database
-    (CLAUDE.md rule 7)."""
+    """Truncates every Phase 1-4-owned table and re-seeds deterministically.
+    `alerts`/`patient_reports`/`notifications` still reset to empty, but
+    `returns`/`routes` no longer do: `seed_returns.seed_example_returns`
+    gives ph_1 (the only RETAILER demo login) two in-progress returns
+    against dist_1/agent_1 so every role's dashboard shows real activity
+    immediately, not an all-zero baseline (added on explicit request — a
+    demo shouldn't look empty before anyone has clicked anything). Runs as
+    a single transaction: a failure partway through rolls back rather than
+    leaving a half-seeded database (CLAUDE.md rule 7)."""
     await _truncate_all_tables(session)
     # The truncate above is a Core-level bulk DELETE, which does not touch
     # the session's ORM identity map. Without expunging, re-adding a row
@@ -163,5 +167,6 @@ async def reset_demo_data(session: AsyncSession) -> None:
 
     now = get_settings().demo_now_dt
     await seed_batches.seed_all_batches(session, now)
+    await seed_returns.seed_example_returns(session, now)
 
     await session.commit()

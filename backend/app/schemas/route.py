@@ -24,15 +24,26 @@ class RouteStopOut(BaseModel):
     expected_batches: int = Field(serialization_alias="expectedBatches")
     return_id: str | None = Field(default=None, serialization_alias="returnId")
     counted: int | None = None
+    # Denormalised off the stop's Return (never off the Return-read endpoint,
+    # which gates on FORWARDED — routes are already readable nationally by
+    # REGULATOR/MANUFACTURER per §6.5, so surfacing just these fields here
+    # is what lets a manufacturer's fleet map show "picked up from <pharmacy>,
+    # carrying <drug>" without a second, permission-denied return fetch).
+    batch_id: str | None = Field(default=None, serialization_alias="batchId")
+    drug_name: str | None = Field(default=None, serialization_alias="drugName")
+    quantity_claimed: int | None = Field(default=None, serialization_alias="quantityClaimed")
 
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, stop: Any) -> RouteStopOut:
+    def from_model(cls, stop: Any, ret: Any | None = None) -> RouteStopOut:
         return cls(
             pharmacy_id=stop.pharmacy_id, pharmacy_name=stop.pharmacy_name, address=stop.address,
             lat=stop.lat, lng=stop.lng, order=stop.stop_order, status=stop.status,
             expected_batches=stop.expected_batches, return_id=stop.return_id, counted=stop.counted,
+            batch_id=ret.batch_id if ret is not None else None,
+            drug_name=ret.drug_name if ret is not None else None,
+            quantity_claimed=ret.quantity_claimed if ret is not None else None,
         )
 
 
@@ -61,14 +72,14 @@ class RouteOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
-    def from_model(cls, route: Any, stops: list[Any]) -> RouteOut:
+    def from_model(cls, route: Any, stop_outs: list[RouteStopOut]) -> RouteOut:
         pos = PosOut(lat=route.pos_lat, lng=route.pos_lng) if route.pos_lat is not None else None
         return cls(
             id=route.id, distributor_id=route.distributor_id, agent_id=route.agent_id,
             agent_name=route.agent_name, vehicle_id=route.vehicle_id, vehicle_reg=route.vehicle_reg,
             status=route.status, running=route.running, path=route.path, seg_index=route.seg_index,
             seg_t=route.seg_t, pos=pos, eta_min=route.eta_min, created_at=route.created_at,
-            stops=[RouteStopOut.from_model(s) for s in stops],
+            stops=stop_outs,
         )
 
 

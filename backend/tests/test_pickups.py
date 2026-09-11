@@ -18,22 +18,26 @@ async def _headers(client, role: str) -> dict:
 
 
 async def _create_and_schedule_return(client):
+    """Creates a return and returns it alongside the route the finalized
+    flow auto-assigns for it — no distributorId in the request and no
+    manual `POST /api/routes` step (return_service.create_return now calls
+    pickup_service.pick_nearest_agent + build_auto_route itself the
+    instant the return exists), replacing what used to be a distributor's
+    manual "New route" action."""
     retailer = await _headers(client, "RETAILER")
     ret_resp = await client.post(
         "/api/returns",
-        json={"batchId": A17, "quantity": 50, "distributorId": "dist_1", "reason": "EXPIRED"},
+        json={"batchId": A17, "quantity": 50, "reason": "EXPIRED"},
         headers=retailer,
     )
     assert ret_resp.status_code == 200, ret_resp.text
     ret_id = ret_resp.json()["id"]
 
     distributor = await _headers(client, "DISTRIBUTOR")
-    route_resp = await client.post(
-        "/api/routes",
-        json={"distributorId": "dist_1", "returnIds": [ret_id], "agentId": "agent_1", "vehicleId": "veh_1",
-              "manualOrder": True},
-        headers=distributor,
-    )
+    ret_detail = await client.get(f"/api/returns/{ret_id}", headers=distributor)
+    route_id = ret_detail.json()["routeId"]
+    assert route_id, ret_detail.text
+    route_resp = await client.get(f"/api/routes/{route_id}", headers=distributor)
     assert route_resp.status_code == 200, route_resp.text
     return ret_id, route_resp.json(), distributor
 
@@ -93,9 +97,17 @@ async def test_agent_arrive_and_pickup_append_events_and_update_return(client, s
     body = pickup_resp.json()
     assert body["stops"][0]["status"] == "DONE"
     assert body["stops"][0]["counted"] == 45
-    # Only stop — route completes (ARCHITECTURE.md §5.3: stop-driven, not position-driven).
-    assert body["status"] == "completed"
-    assert body["running"] is False
+    # The stop itself completes synchronously (stop-driven, ARCHITECTURE.md
+    # §5.3) — but the route no longer teleports home instantly on the last
+    # stop: it stays running with a drive-home leg queued (one more
+    # waypoint appended), and only the gps_simulator tick loop — which
+    # never runs under this ASGITransport-based test client (app.main's
+    # lifespan events don't fire here) — would eventually flip it to
+    # completed once that leg finishes. So immediately after this call it's
+    # still active/running, and the path now has one extra (warehouse) point.
+    assert body["status"] == "active"
+    assert body["running"] is True
+    assert len(body["path"]) == 3  # warehouse -> pharmacy (original) + warehouse (drive-home)
 
     ret_resp = await client.get(f"/api/returns/{ret_id}", headers=distributor)
     ret_body = ret_resp.json()

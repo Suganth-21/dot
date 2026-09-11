@@ -8,6 +8,7 @@ from app.api.routes_auth import router as auth_router
 from app.api.routes_batches import router as batches_router
 from app.api.routes_demo import router as demo_router
 from app.api.routes_entities import router as entities_router
+from app.api.routes_facility_runs import router as facility_runs_router
 from app.api.routes_health import router as health_router
 from app.api.routes_manufacturer import router as manufacturer_router
 from app.api.routes_notifications import router as notifications_router
@@ -29,6 +30,7 @@ api_router.include_router(demo_router, tags=["demo"])
 api_router.include_router(alerts_router, tags=["alerts"])
 api_router.include_router(returns_router, tags=["returns"])
 api_router.include_router(pickups_router, tags=["pickups"])
+api_router.include_router(facility_runs_router, tags=["facility_runs"])
 api_router.include_router(manufacturer_router, tags=["manufacturer"])
 api_router.include_router(entities_router, tags=["entities"])
 api_router.include_router(notifications_router, tags=["notifications"])
