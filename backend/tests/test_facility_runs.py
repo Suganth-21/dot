@@ -6,9 +6,9 @@ requests against a real database.
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 
 from app.models.event import Event
-from sqlalchemy import select
 
 A17 = "BATCH-DOX-2026-A17"  # ph_1, dist_1, mfr_1 (Cipla)
 

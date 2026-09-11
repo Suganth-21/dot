@@ -247,7 +247,10 @@ async def deliver_run(session: AsyncSession, actor: User, run_id: str) -> Facili
     await session.commit()
     for batch, event in updated_batches:
         event_out = EventOut.from_model(event).model_dump(mode="json", by_alias=True)
-        await hub.publish(f"batch:{batch.id}", "batch.updated", {"batchId": batch.id, "status": batch.status.value, "event": event_out})
+        await hub.publish(
+            f"batch:{batch.id}", "batch.updated",
+            {"batchId": batch.id, "status": batch.status.value, "event": event_out},
+        )
     await hub.publish(f"fleet:{run.distributor_id}", "facilityrun.updated", {"runId": run.id})
     await hub.publish("fleet:all", "facilityrun.updated", {"runId": run.id})
     return await _to_run_out(session, run)

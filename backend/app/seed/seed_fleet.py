@@ -7,7 +7,8 @@ instead of the near-empty map a fresh demo would otherwise start with.
 Purely additive: it does not touch `ph_1`/`dist_1`/`agent_1`'s existing
 `seed_returns.py` returns, the two hero batches, or any pharmacy those
 already used, so it can never collide with the guided demo walkthrough in
-BUILDPHASES.md.
+BUILDPHASES.md. It also never assigns `agent_1` himself to one of these
+synthetic routes — see the `_FLEET_PLAN` comment below for why.
 
 Reuses the same route-construction code a live dispatch would
 (`pickup_service.build_auto_route`) and mirrors `pickup_service.
@@ -55,8 +56,16 @@ from app.services import event_service, pickup_service
 # pair so no truck or driver is double-booked within this seed. Chennai x3
 # + Coimbatore + Madurai — a spread wide enough to actually read as a
 # *national* fleet on the regulator's map, not a cluster in one city.
+#
+# agent_1 is deliberately never used here: it's the one entity the
+# PICKUP_AGENT demo login always signs in as (app/seed/seed_data.py
+# DEMO_USERS), and pickup_service.pick_nearest_agent prefers idle agents —
+# leaving agent_1 idle after every reset keeps every *other* test/live
+# return auto-assigning to agent_1 as before, instead of skipping him for
+# the next-idle agent and breaking `route.agent_id == current_user.
+# entity_id` for that demo login.
 _FLEET_PLAN: list[tuple[str, str, str, str, int, float]] = [
-    ("veh_1", "agent_1", "dist_1", "BATCH-MER-2026-D31", 80, 18),
+    ("veh_1", "agent_3", "dist_1", "BATCH-MER-2026-D31", 80, 18),
     ("veh_2", "agent_2", "dist_1", "BATCH-PAR-2026-A34", 33, 12),
     ("veh_3", "agent_4", "dist_2", "BATCH-ATO-2026-E32", 101, 22),
     ("veh_4", "agent_5", "dist_2", "BATCH-MET-2026-B35", 43, 9),

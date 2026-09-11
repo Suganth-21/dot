@@ -277,7 +277,10 @@ async def create_route(session: AsyncSession, actor: User, payload: CreateRouteR
     if not returns:
         raise ValidationFailed("At least one return is required to create a route.", code="NO_RETURNS_SELECTED")
 
-    route = await _build_route(session, distributor=distributor, agent=agent, vehicle=vehicle, returns=returns, manual_order=payload.manual_order)
+    route = await _build_route(
+        session, distributor=distributor, agent=agent, vehicle=vehicle,
+        returns=returns, manual_order=payload.manual_order,
+    )
 
     await notification_service.notify(
         session, Role.PICKUP_AGENT, "New route assigned", f"{len(returns)} stops assigned",

@@ -18,7 +18,6 @@ from ones a real demo walkthrough would have created.
 """
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
