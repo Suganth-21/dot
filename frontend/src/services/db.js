@@ -15,13 +15,14 @@ import * as referenceService from "./referenceService";
 import * as batchService from "./batchService";
 import * as returnService from "./returnService";
 import * as pickupService from "./pickupService";
+import * as facilityRunService from "./facilityRunService";
 import * as alertService from "./alertService";
 import * as notificationService from "./notificationService";
 
 function emptySkeleton() {
   return {
     pharmacies: [], distributors: [], agents: [], vehicles: [], manufacturers: [], facilities: [],
-    batches: [], returns: [], routes: [], alerts: [], sales: [],
+    batches: [], returns: [], routes: [], facilityRuns: [], alerts: [], sales: [],
     notifications: { RETAILER: [], DISTRIBUTOR: [], PICKUP_AGENT: [], MANUFACTURER: [], REGULATOR: [] },
     reports: [], patientReports: [],
   };
@@ -111,6 +112,18 @@ export async function refreshRoutes() {
   subscribeActiveRoutes();
 }
 
+export async function refreshFacilityRuns() {
+  const user = useAuth.getState().user;
+  // RBAC's facility_runs:read deliberately excludes RETAILER (a pharmacy
+  // has no stake in the distributor->facility leg) — same guard shape as
+  // refreshAlerts()'s PICKUP_AGENT exclusion below. Without it, a retailer
+  // login's bootstrap() throws an unhandled 403 straight into the crash
+  // overlay, since Promise.all doesn't isolate one failing fetch.
+  if (!user || user.role === "RETAILER") return;
+  state.facilityRuns = await facilityRunService.listFacilityRuns({});
+  emit(true);
+}
+
 export async function refreshAlerts() {
   const user = useAuth.getState().user;
   // §6.5: PICKUP_AGENT has no "Alerts — read" permission at all.
@@ -148,6 +161,7 @@ async function bootstrap() {
     refreshBatches(),
     refreshReturns(),
     refreshRoutes(),
+    refreshFacilityRuns(),
     refreshAlerts(),
     refreshNotifications(),
   ]);
@@ -208,24 +222,57 @@ function handleWsMessage(raw) {
       if (r) {
         r.pos = msg.data.pos;
         r.etaMin = msg.data.etaMin;
+        const v = state.vehicles.find((x) => x.regNo === msg.data.vehicleReg);
+        if (v) {
+          v.lat = msg.data.pos.lat;
+          v.lng = msg.data.pos.lng;
+        }
+        emit();
+      } else {
+        // A route this session has never fetched — created (and possibly
+        // already dispatched) by someone else, or on another device,
+        // after this tab's own bootstrap — pull it in for real instead of
+        // silently dropping the position tick forever.
+        refreshRoutes();
       }
-      const v = state.vehicles.find((x) => x.regNo === msg.data.vehicleReg);
-      if (v) {
-        v.lat = msg.data.pos.lat;
-        v.lng = msg.data.pos.lng;
-      }
-      emit();
       break;
     }
     case "route.stop":
       refreshRoutes();
       refreshReturns();
       break;
+    case "facilityrun.position": {
+      const r = state.facilityRuns.find((x) => x.id === msg.data.runId);
+      if (r) {
+        r.pos = msg.data.pos;
+        r.etaMin = msg.data.etaMin;
+        const v = state.vehicles.find((x) => x.regNo === msg.data.vehicleReg);
+        if (v) {
+          v.lat = msg.data.pos.lat;
+          v.lng = msg.data.pos.lng;
+        }
+        emit();
+      } else {
+        refreshFacilityRuns();
+      }
+      break;
+    }
+    case "facilityrun.updated":
+      refreshFacilityRuns();
+      refreshBatches();
+      break;
     case "alert.created":
       refreshAlerts();
       break;
     case "notification.created":
       refreshNotifications();
+      // A new pickup route or facility run assigned to this session (most
+      // often a PICKUP_AGENT, who holds no permanent fleet:* subscription
+      // to catch it any other way) always fires a notification too — pull
+      // both in so an already-open Today screen picks it up live instead
+      // of needing a manual reload mid-demo.
+      refreshRoutes();
+      refreshFacilityRuns();
       break;
     case "batch.updated":
       refreshBatches();

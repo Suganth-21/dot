@@ -51,7 +51,7 @@ from app.models.return_ import Return
 from app.models.route import Route, RouteStop
 from app.models.sale import Sale
 from app.models.user import User
-from app.seed import seed_batches, seed_data, seed_returns
+from app.seed import seed_batches, seed_data, seed_fleet, seed_returns
 
 
 async def _truncate_all_tables(session: AsyncSession) -> None:
@@ -168,5 +168,6 @@ async def reset_demo_data(session: AsyncSession) -> None:
     now = get_settings().demo_now_dt
     await seed_batches.seed_all_batches(session, now)
     await seed_returns.seed_example_returns(session, now)
+    await seed_fleet.seed_demo_fleet(session, now)
 
     await session.commit()

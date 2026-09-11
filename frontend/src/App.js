@@ -5,7 +5,7 @@ import { Toaster } from "sonner";
 import {
   LayoutDashboard, Boxes, RotateCcw, ShoppingCart, BarChart3, Bell,
   Inbox, Truck, Route as RouteIcon, AlertTriangle, Send, Users, Map, FileText,
-  Building2, FileCheck2, History,
+  Building2, FileCheck2, History, Factory,
 } from "lucide-react";
 
 import { useAuth } from "./store/authStore";
@@ -46,6 +46,7 @@ const distributorNav = [
   { to: "/distributor/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/distributor/returns/inbox", label: "Inbox", icon: Inbox },
   { to: "/distributor/pickups", label: "Pickups", icon: Truck },
+  { to: "/distributor/facility-runs", label: "Facility Runs", icon: Factory },
   { to: "/distributor/fleet", label: "Fleet", icon: RouteIcon },
   { to: "/distributor/disputes", label: "Disputes", icon: AlertTriangle },
   { to: "/distributor/forward", label: "Forward", icon: Send },
@@ -121,6 +122,8 @@ export default function App() {
             <Route path="pickups" element={<D.Pickups />} />
             <Route path="pickups/new" element={<D.PickupNew />} />
             <Route path="pickups/:routeId" element={<D.RouteView />} />
+            <Route path="facility-runs" element={<D.FacilityRuns />} />
+            <Route path="facility-runs/new" element={<D.FacilityRunNew />} />
             <Route path="fleet" element={<D.Fleet />} />
             <Route path="disputes" element={<D.Disputes />} />
             <Route path="forward" element={<D.Forward />} />
@@ -138,6 +141,7 @@ export default function App() {
             <Route path="facilities/schedule" element={<M.FacilitiesSchedule />} />
             <Route path="certificates" element={<M.Certificates />} />
             <Route path="certificates/upload/:batchId" element={<M.CertUpload />} />
+            <Route path="certificates/:batchId" element={<M.CertView />} />
             <Route path="fleet-map" element={<M.FleetMap />} />
             <Route path="batches" element={<M.Batches />} />
             <Route path="batches/:batchId" element={<M.MBatchDetail />} />

@@ -89,6 +89,11 @@ export default function LiveMap({
               <Popup>
                 <b>{v.reg || "Vehicle"}</b><br />
                 {v.agent && <>Agent: {v.agent}<br /></>}
+                {v.statusLabel && <>{v.statusLabel}<br /></>}
+                {v.from && <>From: {v.from}<br /></>}
+                {v.to && <>To: {v.to}<br /></>}
+                {v.drugName && <>{v.drugName}{v.batchId ? ` · ${v.batchId}` : ""}<br /></>}
+                {v.quantity != null && <>{v.quantity} units<br /></>}
                 {v.eta != null && <>ETA: {v.eta} min</>}
               </Popup>
             </Marker>

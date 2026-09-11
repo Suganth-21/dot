@@ -21,13 +21,24 @@ import { KpiCard, KpiSkeleton, PageHeader, SectionTitle, StatusPill, EmptyState,
 import LiveMap from "../components/maps/LiveMap";
 import { MultiLine, StackedBars, RoundedBars, NetworkGraph, ChartCard } from "../components/charts";
 import { formatDate, formatDateTime, timeAgo, cn, inr } from "../lib/utils";
+import { activeStopOf, vehicleDetailFor, facilityRunVehicleDetail } from "../lib/fleetDetail";
 
 // ============================ DASHBOARD ======================================
 export function Dashboard() {
   const nav = useNavigate();
   const { data: stats, isLoading } = useQuery({ queryKey: ["reg-stats"], queryFn: () => analytics.regulatorStats() });
   const { data: alerts } = useQuery({ queryKey: ["alerts"], queryFn: () => alertSvc.listAlerts() });
-  const routes = useLive((s) => s.routes.filter((r) => r.running));
+  // National view — every leg of the reverse chain, not just currently-
+  // running pickups: was dropping a route the instant it finished (no
+  // drive-home visibility) and never included facility runs at all (the
+  // one leg that actually ends in "destroyed" — exactly what a regulator
+  // most needs to see).
+  const routes = useLive((s) => s.routes.filter((r) => r.status !== "planned"));
+  const facilityRuns = useLive((s) => s.facilityRuns.filter((r) => r.status !== "planned"));
+  const fleetVehicles = [
+    ...routes.map((r) => vehicleDetailFor(r, activeStopOf(r))),
+    ...facilityRuns.map(facilityRunVehicleDetail),
+  ];
   const districts = ["Chennai", "Coimbatore", "Madurai", "Trichy", "Salem", "Tirunelveli"];
   const compliance = { Chennai: 92, Coimbatore: 85, Madurai: 78, Trichy: 88, Salem: 74, Tirunelveli: 81 };
   const live = (alerts || []).filter((a) => a.status !== "CLOSED");
@@ -64,8 +75,8 @@ export function Dashboard() {
       </Card>
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="p-0 lg:col-span-2"><div className="p-5 pb-3"><SectionTitle>Active pickup routes</SectionTitle></div>
-          <LiveMap height={340} vehicles={routes.map((r) => ({ pos: r.pos, reg: r.vehicleReg, agent: r.agentName, eta: r.etaMin }))} stops={routes.flatMap((r) => r.stops)} /></Card>
+        <Card className="p-0 lg:col-span-2"><div className="p-5 pb-3"><SectionTitle>Active pickup routes & facility runs</SectionTitle></div>
+          <LiveMap height={340} vehicles={fleetVehicles} stops={routes.flatMap((r) => r.stops)} /></Card>
         <Card>
           <SectionTitle>Compliance by district</SectionTitle>
           <div className="space-y-3">
@@ -350,19 +361,48 @@ export function EntityDetail() {
 
 // ============================ FLEET MAP ======================================
 export function FleetMap() {
-  const routes = useLive((s) => s.routes.filter((r) => r.running));
+  // National, unfiltered by manufacturer (unlike the manufacturer's own
+  // Fleet Map) — a regulator sees every leg for every distributor: the
+  // pickup routes (kept through completion, not just while running) and
+  // the facility runs (the "was it actually destroyed" leg), both with the
+  // same rich per-vehicle detail the distributor/manufacturer views show.
+  const routes = useLive((s) => s.routes.filter((r) => r.status !== "planned"));
+  const facilityRuns = useLive((s) => s.facilityRuns.filter((r) => r.status !== "planned"));
   const distributors = useLive((s) => s.distributors);
   const [f, setF] = useState("");
-  const shown = routes.filter((r) => !f || r.distributorId === f);
+  const shownRoutes = routes.filter((r) => !f || r.distributorId === f);
+  const shownRuns = facilityRuns.filter((r) => !f || r.distributorId === f);
   return (
     <div>
-      <PageHeader title="Regional fleet map" subtitle="Every pickup vehicle across all distributors" icon={MapIcon} />
+      <PageHeader title="Regional fleet map" subtitle="Every pickup vehicle and facility run across all distributors" icon={MapIcon} />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
         <Card className="space-y-3"><SectionTitle>Filters</SectionTitle>
           <Select value={f} onChange={(e) => setF(e.target.value)} data-testid="reg-fleet-filter"><option value="">All distributors</option>{distributors.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
-          <div className="space-y-2 pt-1">{shown.map((r) => <div key={r.id} className="rounded-2xl bg-clay-surface p-3 text-sm"><div className="font-semibold text-clay-ink">{r.vehicleReg}</div><div className="text-xs text-clay-muted">{r.agentName} · {r.stops.length} stops</div></div>)}{shown.length === 0 && <p className="text-sm text-clay-muted">No active vehicles.</p>}</div>
+          <div className="space-y-2 pt-1">
+            {shownRoutes.map((r) => {
+              const stop = activeStopOf(r);
+              return (
+                <div key={r.id} className="rounded-2xl bg-clay-surface p-3 text-sm" data-testid={`reg-fleet-route-${r.id}`}>
+                  <div className="font-semibold text-clay-ink">{r.vehicleReg}</div>
+                  <div className="text-xs text-clay-muted">{r.agentName} · {stop?.status === "DONE" ? `picked up · ETA ${r.etaMin}m to distributor` : `ETA ${r.etaMin}m`} · from {stop?.pharmacyName}</div>
+                </div>
+              );
+            })}
+            {shownRuns.map((r) => (
+              <div key={r.id} className="rounded-2xl bg-clay-surface p-3 text-sm" data-testid={`reg-fleet-run-${r.id}`}>
+                <div className="font-semibold text-clay-ink">{r.vehicleReg}</div>
+                <div className="text-xs text-clay-muted">{r.agentName} · {r.delivered ? "delivered" : `ETA ${r.etaMin}m`} · to {r.facilityName}</div>
+              </div>
+            ))}
+            {shownRoutes.length === 0 && shownRuns.length === 0 && <p className="text-sm text-clay-muted">No active vehicles.</p>}
+          </div>
         </Card>
-        <Card className="p-0 lg:col-span-3"><LiveMap height={480} vehicles={shown.map((r) => ({ pos: r.pos, reg: r.vehicleReg, agent: r.agentName, eta: r.etaMin }))} stops={shown.flatMap((r) => r.stops)} /></Card>
+        <Card className="p-0 lg:col-span-3">
+          <LiveMap height={480}
+            vehicles={[...shownRoutes.map((r) => vehicleDetailFor(r, activeStopOf(r))), ...shownRuns.map(facilityRunVehicleDetail)]}
+            stops={shownRoutes.flatMap((r) => r.stops)}
+          />
+        </Card>
       </div>
     </div>
   );

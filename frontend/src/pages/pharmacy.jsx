@@ -13,6 +13,7 @@ import {
 
 import { useAuth } from "../store/authStore";
 import { useLive } from "../hooks/useDb";
+import { refreshRoutes, refreshReturns } from "../services/db";
 import { useAppMutation } from "../hooks/useAppMutation";
 import * as batchSvc from "../services/batchService";
 import * as returnSvc from "../services/returnService";
@@ -31,8 +32,10 @@ import PhotoCapture from "../components/scanner/PhotoCapture";
 import LiveMap from "../components/maps/LiveMap";
 import { SmoothLine, RoundedBars, Donut, Heatmap, StackedBars, ChartCard } from "../components/charts";
 import { formatDate, formatDateTime, daysBetween, DEMO_NOW, inr, timeAgo, cn } from "../lib/utils";
+import { encodeBatchQr, decodeBatchQr } from "../lib/qrPayload";
 
 const usePid = () => useAuth((s) => s.user?.entityId) || "ph_1";
+const RETURNABLE_STATUSES = ["ACTIVE", "EXPIRING_SOON", "EXPIRED"];
 
 function rowTint(status, expiryDate) {
   if (status === "IN_RETURN") return "bg-accent-soft/30";
@@ -223,13 +226,32 @@ export function InventoryAdd() {
   const { data: drugs } = useQuery({ queryKey: ["drugs"], queryFn: ref.getDrugs, staleTime: Infinity });
   const { data: manufacturers } = useQuery({ queryKey: ["manufacturers"], queryFn: ref.getManufacturers, staleTime: Infinity });
 
-  const onScan = (code) => {
-    const k = KNOWN[code];
+  const onScan = (raw) => {
+    const decoded = decodeBatchQr(raw);
     setScanned(true);
-    // A scanned code only carries a name/category locally (KNOWN, below) —
-    // unitPrice and manufacturerId are real fields the form must still
-    // send, resolved the same way the manual drug/manufacturer pickers do:
-    // an exact match against real reference data, never a guess.
+
+    // A DOT-generated label carries the full record — every field on the
+    // right autofills straight from it, nothing to re-derive or guess.
+    if (decoded.drugName || decoded.manufacturerName) {
+      setForm((f) => ({
+        ...f,
+        batchId: decoded.batchId,
+        drugName: decoded.drugName || "", manufacturerName: decoded.manufacturerName || "",
+        manufacturerId: decoded.manufacturerId, drugKey: decoded.drugKey, category: decoded.category,
+        mfg: decoded.mfg || "", exp: decoded.exp || "",
+        quantity: decoded.quantity != null ? String(decoded.quantity) : (f.quantity || "50"),
+        unitPrice: decoded.unitPrice,
+      }));
+      toast.success(`Scanned ${decoded.batchId} — check the details, then Register`, { duration: 1500 });
+      return;
+    }
+
+    // Plain/legacy code (demo buttons, or a printed pre-DOT label) — only
+    // the id is known; look it up in the local demo dictionary same as
+    // before. unitPrice/manufacturerId still resolved against real
+    // reference data, never guessed.
+    const code = decoded.batchId;
+    const k = KNOWN[code];
     const d = k?.drugKey ? (drugs || []).find((x) => x.key === k.drugKey) : null;
     const m = k?.manufacturerName ? (manufacturers || []).find((x) => x.name === k.manufacturerName) : null;
     setForm((f) => ({
@@ -238,7 +260,7 @@ export function InventoryAdd() {
       drugKey: k?.drugKey, category: k?.category, quantity: f.quantity || "50",
       unitPrice: d?.price, manufacturerId: m?.id,
     }));
-    toast.success(`Scanned ${code}`);
+    toast.success(`Scanned ${code}`, { duration: 1500 });
   };
 
   // Picking a drug from the list is the friendly path — it fills drug name,
@@ -258,15 +280,26 @@ export function InventoryAdd() {
   };
 
   const mut = useAppMutation((payload) => batchSvc.addBatch(payload, { id: pid, name: user?.name, role: "RETAILER" }, pid), {
-    onSuccess: () => { toast.success("Batch registered"); setRegistered({ batchId: form.batchId, drugName: form.drugName }); },
+    onSuccess: () => {
+      toast.success("Batch registered");
+      setRegistered({
+        batchId: form.batchId, drugName: form.drugName, drugKey: form.drugKey, category: form.category,
+        manufacturerName: form.manufacturerName, manufacturerId: form.manufacturerId,
+        mfg: form.mfg, exp: form.exp, quantity: Number(form.quantity), unitPrice: form.unitPrice,
+      });
+    },
     onError: (err) => {
       if (err.code === "BATCH_DESTROYED_REENTRY") { toast.error("RE-ENTRY ALERT: this batch was already destroyed. Regulator notified."); nav("/pharmacy/alerts"); }
       else toast.error(err.message || "Could not register batch");
     },
   });
 
+  // Each check reports its own real cause — a full quantity no longer gets
+  // blamed when the actual missing field is the drug/batch id.
   const submit = () => {
-    if (!form.batchId || !form.drugName || !form.quantity || Number(form.quantity) < 1) { toast.error("Pick a drug, then enter a quantity of at least 1"); return; }
+    if (!form.drugName) { toast.error("Pick a drug, or scan a batch QR, first"); return; }
+    if (!form.batchId) { toast.error("Batch number is missing — tap Generate or scan a QR"); return; }
+    if (!form.quantity || Number(form.quantity) < 1) { toast.error("Enter a quantity of at least 1"); return; }
     mut.mutate({ ...form, quantity: Number(form.quantity), mfgDate: form.mfg, expiryDate: form.exp });
   };
 
@@ -277,7 +310,7 @@ export function InventoryAdd() {
       <div className="mx-auto max-w-md">
         <PageHeader title="Batch registered" subtitle="Print this label and stick it on the shelf." icon={ShieldCheck} />
         <Card className="flex flex-col items-center gap-4 py-8">
-          <QrCodeGenerator value={registered.batchId} batchId={registered.batchId} drugName={registered.drugName} size={220} />
+          <QrCodeGenerator value={encodeBatchQr(registered)} batchId={registered.batchId} drugName={registered.drugName} size={220} />
           <Button className="mt-2 w-full" onClick={() => nav("/pharmacy/inventory")} data-testid="qr-done-btn">
             Done <ArrowRight className="h-4 w-4" />
           </Button>
@@ -359,7 +392,7 @@ export function BatchDetail() {
   }, [batch]);
 
   if (isLoading || !batch) return <LoadingState rows={6} />;
-  const canReturn = ["ACTIVE", "EXPIRING_SOON", "EXPIRED"].includes(batch.status);
+  const canReturn = RETURNABLE_STATUSES.includes(batch.status);
 
   return (
     <div>
@@ -383,7 +416,14 @@ export function BatchDetail() {
         </div>
       </Card>
       <Modal open={qrOpen} onClose={() => setQrOpen(false)} title="Batch label" size="sm">
-        <QrCodeGenerator value={batch.id} batchId={batch.id} drugName={batch.drugName} size={200} />
+        <QrCodeGenerator
+          value={encodeBatchQr({
+            batchId: batch.id, drugName: batch.drugName, drugKey: batch.drugKey, category: batch.category,
+            manufacturerName: batch.manufacturerName, manufacturerId: batch.manufacturerId,
+            mfg: batch.mfgDate, exp: batch.expiryDate, quantity: batch.quantity, unitPrice: batch.unitPrice,
+          })}
+          batchId={batch.id} drugName={batch.drugName} size={200}
+        />
       </Modal>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
@@ -415,12 +455,36 @@ export function Returns() {
   const pid = usePid();
   const nav = useNavigate();
   const { data: rows, isLoading } = useQuery({ queryKey: ["returns", pid], queryFn: () => returnSvc.listReturns({ pharmacyId: pid }) });
+  const { data: batches } = useQuery({ queryKey: ["batches"], queryFn: () => batchSvc.listBatches() });
   const dists = useLive((s) => s.distributors);
   const dName = (id) => dists.find((d) => d.id === id)?.name || "—";
+
+  const returnableBatches = (batches || []).filter((b) => b.pharmacyId === pid && RETURNABLE_STATUSES.includes(b.status));
+
+  // Scan an existing label to jump straight into the return flow for that
+  // exact batch — checked against real inventory, not guessed. A code for
+  // a batch that isn't this pharmacy's (or doesn't exist at all) is
+  // rejected right here instead of silently opening a blank form.
+  const onScanReturn = async (raw) => {
+    const { batchId: code } = decodeBatchQr(raw);
+    const batch = await batchSvc.getBatch(code);
+    if (!batch || batch.pharmacyId !== pid) { toast.error(`${code} isn't in your inventory`); return; }
+    if (!RETURNABLE_STATUSES.includes(batch.status)) { toast.error(`${batch.drugName} can't be returned (${batch.status})`); return; }
+    toast.success(`Found ${batch.drugName} — confirm the return`, { duration: 1500 });
+    nav(`/pharmacy/returns/new/${batch.id}`);
+  };
 
   return (
     <div>
       <PageHeader title="Returns" subtitle="Every return you've initiated" icon={RotateCcw} />
+      <Card className="mb-4">
+        <SectionTitle>Scan to return</SectionTitle>
+        <QrScanner
+          onScan={onScanReturn}
+          height={220}
+          demoCodes={returnableBatches.slice(0, 3).map((b) => ({ code: b.id, label: b.drugName }))}
+        />
+      </Card>
       {isLoading ? <LoadingState /> : (rows || []).length === 0 ? (
         <EmptyState title="No returns yet" subtitle="Start a return from any batch in your inventory." icon={RotateCcw}
           action={<Button onClick={() => nav("/pharmacy/inventory")}>Go to inventory</Button>} />
@@ -456,16 +520,22 @@ export function ReturnNew() {
   const nav = useNavigate();
   const user = useAuth((s) => s.user);
   const { data: batch } = useQuery({ queryKey: ["batch", batchId], queryFn: () => batchSvc.getBatch(batchId) });
-  const { data: distributors } = useQuery({ queryKey: ["distributors"], queryFn: () => ref.getDistributors() });
   const [qty, setQty] = useState("");
-  const [dist, setDist] = useState("");
   const [reason, setReason] = useState("EXPIRED");
   const [photoHash, setPhotoHash] = useState(null);
 
   React.useEffect(() => { if (batch) setQty(String(batch.quantity)); }, [batch]);
 
-  const mut = useAppMutation(() => returnSvc.createReturn(batchId, { quantity: Number(qty), distributorId: dist, reason, photoHash }, { id: pid, name: user?.name, role: "RETAILER" }), {
-    onSuccess: (r) => { toast.success("Return created — tracking live"); nav(`/pharmacy/returns/${r.id}/track`); },
+  // No distributor picker — the finalized flow auto-assigns the nearest
+  // available pickup agent (and their distributor) by location the
+  // instant this return is created (return_service.create_return calls
+  // pickup_service.pick_nearest_agent server-side). This replaces the
+  // retailer picking a distributor by name, which could silently orphan a
+  // return on a distributor nobody could act on (only one distributor
+  // demo login actually exists) — auto-assignment always resolves to a
+  // real, available agent.
+  const mut = useAppMutation(() => returnSvc.createReturn(batchId, { quantity: Number(qty), reason, photoHash }, { id: pid, name: user?.name, role: "RETAILER" }), {
+    onSuccess: (r) => { toast.success("Return created — pickup agent assigned"); nav(`/pharmacy/returns/${r.id}/track`); },
   });
 
   if (!batch) return <LoadingState rows={4} />;
@@ -485,18 +555,12 @@ export function ReturnNew() {
           <PhotoCapture idleLabel="Tap to photograph strip" onCaptured={setPhotoHash} testId="return-photo" />
         </div>
         <div><Label>Confirm remaining quantity</Label><Input type="number" min="1" max={batch.quantity} value={qty} onChange={(e) => setQty(e.target.value)} data-testid="return-qty" /></div>
-        <div><Label>Select distributor</Label>
-          <Select value={dist} onChange={(e) => setDist(e.target.value)} data-testid="return-distributor">
-            <option value="">Choose distributor…</option>
-            {(distributors || []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </Select>
-        </div>
         <div><Label>Reason</Label>
           <Select value={reason} onChange={(e) => setReason(e.target.value)} data-testid="return-reason">
             <option value="EXPIRED">Expired</option><option value="DAMAGED">Damaged</option><option value="RECALL">Recall</option>
           </Select>
         </div>
-        <Button className="w-full" disabled={!dist || !photoHash || !qty || Number(qty) < 1 || Number(qty) > batch.quantity || mut.isPending} onClick={() => mut.mutate()} data-testid="return-submit">Create return <ArrowRight className="h-4 w-4" /></Button>
+        <Button className="w-full" disabled={!photoHash || !qty || Number(qty) < 1 || Number(qty) > batch.quantity || mut.isPending} onClick={() => mut.mutate()} data-testid="return-submit">Create return — assign nearest agent <ArrowRight className="h-4 w-4" /></Button>
       </Card>
     </div>
   );
@@ -507,10 +571,28 @@ const RET_STEPS = ["Requested", "Assigned", "En Route", "Arrived", "Confirmed"];
 const RET_STEP_IDX = { REQUESTED: 0, SCHEDULED: 1, ASSIGNED: 1, EN_ROUTE: 2, PICKED_UP: 3, ARRIVED: 3, CONFIRMED: 4, DISPUTED: 3, FORWARDED: 4 };
 export function ReturnTrack() {
   const { returnId } = useParams();
-  const { data: ret } = useQuery({ queryKey: ["return", returnId], queryFn: () => returnSvc.getReturn(returnId) });
+  const { data: ret } = useQuery({
+    queryKey: ["return", returnId], queryFn: () => returnSvc.getReturn(returnId),
+    refetchInterval: 3000, // a distributor assigning/dispatching a route happens on a different
+    // portal with no push channel back to this retailer session (only DISTRIBUTOR/REGULATOR/
+    // MANUFACTURER are WS-subscribed to route/fleet events) — poll so "assigned" and the live
+    // truck actually appear here without a manual page reload.
+  });
   const routes = useLive((s) => s.routes);
-  const route = routes.find((r) => r.id === ret?.routeId) || routes.find((r) => r.running);
+  const route = routes.find((r) => r.id === ret?.routeId);
   const batch = useLive((s) => s.batches.find((b) => b.id === ret?.batchId));
+  const dists = useLive((s) => s.distributors);
+  const distributorName = dists.find((d) => d.id === ret?.distributorId)?.name;
+
+  // Same reason as the refetchInterval above: this pharmacy's local route/vehicle
+  // cache only ever gets populated by a REST refetch, never a live push, until a
+  // route for this return actually exists — so pull it on an interval too.
+  React.useEffect(() => {
+    refreshReturns();
+    refreshRoutes();
+    const t = setInterval(() => { refreshReturns(); refreshRoutes(); }, 3000);
+    return () => clearInterval(t);
+  }, []);
 
   if (!ret) return <LoadingState rows={5} />;
   const stepIdx = RET_STEP_IDX[ret.status] ?? 0;
@@ -519,23 +601,31 @@ export function ReturnTrack() {
   return (
     <div>
       <PageHeader title="Track your pickup" subtitle={`${ret.drugName} · ${ret.batchId}`} icon={Truck} />
-      <div className="relative">
-        <LiveMap height={420}
-          center={route ? [route.pos.lat, route.pos.lng] : [13.0827, 80.2707]}
-          vehicles={route ? [{ pos: route.pos, reg: route.vehicleReg, agent: route.agentName, eta: route.etaMin }] : []}
-          stops={route?.stops || []}
-          routePath={route?.path}
-          follow
-        />
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="absolute left-4 top-4 z-[500] w-64 rounded-clay bg-clay-card/95 p-4 shadow-pop ring-1 ring-clay-line backdrop-blur">
-          <div className="text-xs font-semibold uppercase tracking-wide text-clay-muted">Your pickup</div>
-          <div className="mt-1 text-lg font-extrabold text-clay-ink">Stop {stopNo} of {route?.stops.length || 1}</div>
-          <div className="mt-1 flex items-center gap-1.5 text-sm text-accent-ink"><Clock className="h-4 w-4" /> ETA {route?.etaMin ?? "—"} minutes</div>
-          <Button variant="soft" size="sm" className="mt-3 w-full" onClick={() => toast.info(`Calling ${route?.agentName || "agent"}…`)} data-testid="call-agent">
-            <Phone className="h-4 w-4" /> Call agent
-          </Button>
-        </motion.div>
-      </div>
+      {!route ? (
+        <Card className="flex flex-col items-center gap-2 py-10 text-center">
+          <Truck className="h-8 w-8 text-clay-muted" />
+          <div className="text-lg font-bold text-clay-ink">Waiting for {distributorName || "the distributor"} to assign a pickup</div>
+          <p className="max-w-sm text-sm text-clay-muted">Your return is in their inbox. This page updates on its own the moment a vehicle is dispatched — no need to refresh.</p>
+        </Card>
+      ) : (
+        <div className="relative">
+          <LiveMap height={420}
+            center={[route.pos.lat, route.pos.lng]}
+            vehicles={[{ pos: route.pos, reg: route.vehicleReg, agent: route.agentName, eta: route.etaMin }]}
+            stops={route.stops || []}
+            routePath={route.path}
+            follow
+          />
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="absolute left-4 top-4 z-[500] w-64 rounded-clay bg-clay-card/95 p-4 shadow-pop ring-1 ring-clay-line backdrop-blur">
+            <div className="text-xs font-semibold uppercase tracking-wide text-clay-muted">Your pickup</div>
+            <div className="mt-1 text-lg font-extrabold text-clay-ink">Stop {stopNo} of {route.stops.length || 1}</div>
+            <div className="mt-1 flex items-center gap-1.5 text-sm text-accent-ink"><Clock className="h-4 w-4" /> ETA {route.etaMin ?? "—"} minutes</div>
+            <Button variant="soft" size="sm" className="mt-3 w-full" onClick={() => toast.info(`Calling ${route.agentName || "agent"}…`)} data-testid="call-agent">
+              <Phone className="h-4 w-4" /> Call agent
+            </Button>
+          </motion.div>
+        </div>
+      )}
 
       <Card className="mt-4"><SectionTitle>Pickup status</SectionTitle><Stepper steps={RET_STEPS} current={stepIdx} /></Card>
 
@@ -567,7 +657,8 @@ export function Sales() {
   // it sells 1 unit immediately — the counterpart to InventoryAdd's
   // on-phone barcode generation, closing the loop from "generate a code at
   // entry" to "scan that same code at checkout".
-  const onCheckoutScan = (code) => {
+  const onCheckoutScan = (raw) => {
+    const { batchId: code } = decodeBatchQr(raw);
     const batch = batches.find((b) => b.id === code || b.id === `BATCH-${code}` || b.id.endsWith(code));
     if (!batch) { toast.error(`No matching stock for ${code}`); return; }
     setSel(batch.id);

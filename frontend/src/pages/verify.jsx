@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Logo } from "../components/layout/Logo";
 import { Button, Card, Textarea, Label, Input } from "../components/ui";
 import QrScanner from "../components/scanner/QrScanner";
+import { decodeBatchQr } from "../lib/qrPayload";
 import { verifyBatch, reportSuspicious } from "../services/verifyService";
 import { formatDate } from "../lib/utils";
 
@@ -54,7 +55,7 @@ export function Scan() {
       <p className="mb-4 text-center text-sm font-medium text-clay-ink">Point at the QR code on your medicine box</p>
       <QrScanner
         height={340}
-        onScan={(code) => nav(`/verify/result/${encodeURIComponent(code)}`)}
+        onScan={(raw) => nav(`/verify/result/${encodeURIComponent(decodeBatchQr(raw).batchId)}`)}
         demoCodes={[
           { code: "BATCH-DOX-2026-B04", label: "Destroyed batch" },
           { code: "BATCH-DOX-2026-A17", label: "Genuine batch" },
@@ -73,6 +74,34 @@ export function Result() {
 
   if (isLoading || !data) {
     return <Shell><div className="flex flex-1 flex-col items-center justify-center gap-3 text-clay-muted"><Loader2 className="h-8 w-8 animate-spin" /><p className="text-sm">Verifying with the trust registry…</p></div></Shell>;
+  }
+
+  if (data.verdict === "GENUINE" && data.batch.status === "EXPIRED") {
+    // Authentic (not counterfeit, not destroyed) but past its expiry date —
+    // verdict stays GENUINE per the public verify contract (authenticity
+    // only), but a patient must never read that as "safe to use".
+    return (
+      <Shell>
+        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+          className="flex flex-col items-center rounded-clay bg-amber2-soft p-6 text-center ring-1 ring-amber2/20" data-testid="result-expired">
+          <span className="inline-flex h-24 w-24 items-center justify-center rounded-full bg-amber2 text-white shadow-pop">
+            <AlertOctagon className="h-12 w-12" />
+          </span>
+          <h1 className="mt-5 text-2xl font-extrabold text-[#96702a]">This medicine has EXPIRED — do not use</h1>
+          <p className="mt-3 text-sm text-clay-ink">
+            It is authentic and not counterfeit, but its expiry date has passed. Do not consume it.
+          </p>
+          <Card className="mt-6 w-full text-left">
+            <Row k="Drug" v={data.batch.drugName} />
+            <Row k="Manufacturer" v={data.batch.manufacturerName} />
+            <Row k="Batch" v={data.batch.id} />
+            <Row k="Expiry" v={formatDate(data.batch.expiryDate)} />
+          </Card>
+          <Button variant="ghost" size="sm" className="mt-2 text-clay-muted" onClick={() => nav("/verify/report")}>Something wrong? Report it</Button>
+        </motion.div>
+        <div className="mt-4 text-center text-xs text-clay-muted">Verified via DOT — India's pharmaceutical trust registry</div>
+      </Shell>
+    );
   }
 
   if (data.verdict === "GENUINE") {

@@ -8066,7 +8066,7 @@ recharts-scale@^0.4.4:
   dependencies:
     decimal.js-light "^2.4.1"
 
-recharts@2.12.7:
+recharts@^2.12.7:
   version "2.12.7"
   resolved "https://registry.npmjs.org/recharts/-/recharts-2.12.7.tgz"
   integrity sha512-hlLJMhPQfv4/3NBSAyq3gzGg4h2v69RJh6KU7b3pXYNNAELs9kEoXOjbkxdXpALqKBoVmVptGfLpxdaVYqjmXQ==

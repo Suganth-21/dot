@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Boxes, FileCheck2, Trash2, AlertTriangle, ShieldAlert, Building2, Calendar,
-  Map as MapIcon, TrendingUp, Search, ChevronRight, Upload, FileText, CheckCircle2, Lock,
+  Map as MapIcon, TrendingUp, Search, ChevronRight, Upload, FileText, CheckCircle2, Lock, Award,
 } from "lucide-react";
 
 import { useAuth } from "../store/authStore";
@@ -22,6 +22,7 @@ import { KpiCard, KpiSkeleton, PageHeader, SectionTitle, StatusPill, EmptyState,
 import LiveMap from "../components/maps/LiveMap";
 import { SmoothLine, RoundedBars, FlowDiagram, ChartCard } from "../components/charts";
 import { formatDate, timeAgo, cn, inr } from "../lib/utils";
+import { myBatchStopOf, vehicleDetailFor, facilityRunVehicleDetail, myFacilityRunBatches } from "../lib/fleetDetail";
 
 const useMid = () => useAuth((s) => s.user?.entityId) || "mfr_1";
 
@@ -30,7 +31,25 @@ export function Dashboard() {
   const mid = useMid();
   const { data: stats, isLoading } = useQuery({ queryKey: ["mfr-stats", mid], queryFn: () => analytics.manufacturerStats(mid) });
   const { data: alerts } = useQuery({ queryKey: ["alerts"], queryFn: () => listAlerts({ manufacturerId: mid }) });
-  const routes = useLive((s) => s.routes.filter((r) => r.running));
+  const allRoutes = useLive((s) => s.routes);
+  const facilityRuns = useLive((s) => s.facilityRuns);
+  const batches = useLive((s) => s.batches);
+  // Same scoping as the dedicated Fleet Map page (was previously showing
+  // every distributor's running routes nationally, unfiltered — a real
+  // leak, not just a missing feature) and the same "keep showing a route
+  // through completion" rule, so a just-finished pickup doesn't vanish
+  // from the home widget the instant it's done. Both legs of the reverse
+  // chain — pharmacy->distributor (routes) and distributor->facility
+  // (facility runs) — show up on the same map.
+  const myPickupLeg = allRoutes
+    .filter((r) => r.status !== "planned")
+    .map((r) => ({ route: r, stop: myBatchStopOf(r, batches, mid) }))
+    .filter((x) => x.stop);
+  const myFacilityLeg = facilityRuns.filter((r) => myFacilityRunBatches(r, batches, mid).length > 0);
+  const fleetVehicles = [
+    ...myPickupLeg.map(({ route: r, stop }) => vehicleDetailFor(r, stop)),
+    ...myFacilityLeg.map(facilityRunVehicleDetail),
+  ];
   const reentry = (alerts || []).filter((a) => a.type === "REENTRY").slice(0, 4);
 
   return (
@@ -47,7 +66,11 @@ export function Dashboard() {
       )}
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="p-0"><div className="p-5 pb-3"><SectionTitle>Fleet carrying your batches</SectionTitle></div>
-          <LiveMap height={340} vehicles={routes.map((r) => ({ pos: r.pos, reg: r.vehicleReg, agent: r.agentName, eta: r.etaMin }))} stops={routes.flatMap((r) => r.stops)} />
+          {fleetVehicles.length === 0 && <p className="px-5 pb-3 text-sm text-clay-muted">No vehicles carrying your batches right now.</p>}
+          <LiveMap height={340}
+            vehicles={fleetVehicles}
+            stops={myPickupLeg.map(({ stop }) => stop)}
+          />
         </Card>
         <Card tint="rose">
           <SectionTitle>Re-entry alerts on your batches</SectionTitle>
@@ -192,7 +215,11 @@ export function Certificates() {
               <div key={b.id} className="flex items-center gap-3 border-b border-clay-line/60 px-5 py-3.5">
                 <div className="flex-1"><div className="text-sm font-semibold text-clay-ink">{b.drugName}</div><div className="font-mono text-xs text-clay-muted">{b.id}</div></div>
                 <StatusPill status={b.status} />
-                {b.status === "DESTROYED" ? <Badge tone="gray">{b.certId}</Badge> : (
+                {b.status === "DESTROYED" ? (
+                  <Button size="sm" variant="outline" onClick={() => nav(`/manufacturer/certificates/${b.id}`)} data-testid={`cert-view-${b.id}`}>
+                    <Award className="h-4 w-4" /> {b.certId}
+                  </Button>
+                ) : (
                   <Button size="sm" variant={elig.eligible ? "primary" : "outline"} onClick={() => nav(`/manufacturer/certificates/upload/${b.id}`)} data-testid={`cert-${b.id}`}>
                     {elig.eligible ? <><Upload className="h-4 w-4" /> Upload</> : <><Lock className="h-4 w-4" /> Blocked</>}
                   </Button>
@@ -215,7 +242,7 @@ export function CertUpload() {
   const [file, setFile] = useState(false);
 
   const mut = useAppMutation(() => mfrSvc.uploadCertificate(batchId, { certId: `CERT-${batch.code}-2026`, fileName: "destruction-cert.pdf" }, { id: mid, name: user?.name, role: "MANUFACTURER" }), {
-    onSuccess: () => { toast.success("Certificate bound — batch DESTROYED"); nav("/manufacturer/certificates"); },
+    onSuccess: () => { toast.success("Certificate bound — batch DESTROYED"); nav(`/manufacturer/certificates/${batchId}`); },
     onError: (err) => toast.error(err.message || "Certificate upload blocked"),
   });
 
@@ -260,12 +287,75 @@ export function CertUpload() {
 }
 function Meta({ k, v }) { return <div><div className="text-xs uppercase tracking-wide text-clay-muted">{k}</div><div className="font-semibold text-clay-ink">{v}</div></div>; }
 
+// The certificate a manufacturer lands on right after CertUpload marks a
+// batch DESTROYED, and the same view a cert badge in the list reopens later.
+// Sourced straight off the batch (certId/destroyedDate/scheduledFacility) and
+// its own DESTROYED event — no separate "certificate" entity to fetch.
+export function CertView() {
+  const { batchId } = useParams();
+  const nav = useNavigate();
+  const { data: batch } = useQuery({ queryKey: ["batch", batchId], queryFn: () => batchSvc.getBatch(batchId) });
+  if (!batch) return <LoadingState rows={4} />;
+  if (batch.status !== "DESTROYED") return <EmptyState title="Not yet destroyed" subtitle="This batch has no certificate bound." icon={FileCheck2} />;
+
+  const destroyEvent = [...batch.events].reverse().find((e) => e.type === "DESTROYED");
+
+  return (
+    <div className="max-w-2xl">
+      <button onClick={() => nav("/manufacturer/certificates")} className="mb-3 text-sm font-semibold text-clay-muted">← Back to certificates</button>
+      <motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}
+        className="rounded-clay border-2 border-dashed border-mint bg-mint-soft p-8 text-center" data-testid="destruction-certificate">
+        <span className="mx-auto inline-flex h-16 w-16 items-center justify-center rounded-full bg-mint text-white shadow-pop"><Award className="h-8 w-8" /></span>
+        <div className="mt-3 text-xs font-semibold uppercase tracking-widest text-[#1f8a6a]">Certificate of Destruction</div>
+        <div className="mt-1 font-mono text-lg font-extrabold text-clay-ink">{batch.certId}</div>
+
+        <div className="mx-auto mt-6 max-w-md space-y-2 rounded-2xl bg-white/70 p-4 text-left text-sm">
+          <Row k="Drug" v={batch.drugName} />
+          <Row k="Batch" v={batch.id} />
+          <Row k="Manufacturer" v={batch.manufacturerName} />
+          <Row k="Facility" v={batch.scheduledFacility?.name || destroyEvent?.meta?.facility || "—"} />
+          <Row k="Destroyed on" v={formatDate(batch.destroyedDate)} />
+          <Row k="Certified by" v={destroyEvent?.actor?.name ? `${destroyEvent.actor.name} (${destroyEvent.actor.role})` : "—"} />
+        </div>
+
+        {destroyEvent && (
+          <div className="mx-auto mt-3 max-w-md truncate rounded-2xl bg-white/50 px-4 py-2 font-mono text-[11px] text-clay-muted" title={destroyEvent.hash}>
+            hash {destroyEvent.hash}
+          </div>
+        )}
+      </motion.div>
+
+      <Button variant="outline" className="mt-4 w-full" onClick={() => nav(`/manufacturer/batches/${batch.id}`)}>View full hash chain</Button>
+    </div>
+  );
+}
+function Row({ k, v }) { return <div className="flex items-center justify-between border-b border-clay-line/60 py-1.5 last:border-0"><span className="text-clay-muted">{k}</span><span className="font-semibold text-clay-ink">{v}</span></div>; }
+
 // ============================ FLEET MAP ======================================
 export function FleetMap() {
-  const routes = useLive((s) => s.routes.filter((r) => r.running));
+  const mid = useMid();
+  const routes = useLive((s) => s.routes);
+  const facilityRuns = useLive((s) => s.facilityRuns);
+  const batches = useLive((s) => s.batches);
   const distributors = useLive((s) => s.distributors);
   const [distFilter, setDistFilter] = useState("");
-  const shown = routes.filter((r) => !distFilter || r.distributorId === distFilter);
+
+  // Dispatched at least once (skip never-started "planned" routes/runs),
+  // and carrying one of my own batches (myBatchStopOf/myFacilityRunBatches
+  // — see lib/fleetDetail.js for why that's joined via batches, not
+  // state.returns). Kept visible through completion, not just while
+  // running, so a just-finished pickup/delivery doesn't disappear the
+  // instant it's done. Both legs of the reverse chain shown together.
+  const relevantRoutes = routes
+    .filter((r) => r.status !== "planned")
+    .map((r) => ({ route: r, stop: myBatchStopOf(r, batches, mid) }))
+    .filter((x) => x.stop);
+  const relevantRuns = facilityRuns.filter((r) => myFacilityRunBatches(r, batches, mid).length > 0);
+
+  const shownRoutes = relevantRoutes.filter(({ route: r }) => !distFilter || r.distributorId === distFilter);
+  const shownRuns = relevantRuns.filter((r) => !distFilter || r.distributorId === distFilter);
+  const shownCount = shownRoutes.length + shownRuns.length;
+
   return (
     <div>
       <PageHeader title="Fleet map" subtitle="Distributor vehicles carrying your batches" icon={MapIcon} />
@@ -274,14 +364,29 @@ export function FleetMap() {
           <SectionTitle>Filters</SectionTitle>
           <div><Label>Distributor</Label><Select value={distFilter} onChange={(e) => setDistFilter(e.target.value)} data-testid="fleet-dist-filter"><option value="">All distributors</option>{distributors.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></div>
           <div className="space-y-2 pt-2">
-            {shown.map((r) => (
-              <div key={r.id} className="rounded-2xl bg-clay-surface p-3 text-sm"><div className="font-semibold text-clay-ink">{r.vehicleReg}</div><div className="text-xs text-clay-muted">{r.agentName} · ETA {r.etaMin}m · next: {r.stops.find((s) => s.status === "CURRENT")?.pharmacyName || "—"}</div></div>
+            {shownRoutes.map(({ route: r, stop }) => (
+              <div key={r.id} className="rounded-2xl bg-clay-surface p-3 text-sm" data-testid={`fleet-vehicle-${r.id}`}>
+                <div className="font-semibold text-clay-ink">{r.vehicleReg}</div>
+                <div className="text-xs text-clay-muted">
+                  {r.agentName} · {stop.status === "DONE" ? `picked up · ETA ${r.etaMin}m to distributor` : `ETA ${r.etaMin}m`} · from {stop.pharmacyName}
+                </div>
+              </div>
             ))}
-            {shown.length === 0 && <p className="text-sm text-clay-muted">No vehicles in transit.</p>}
+            {shownRuns.map((r) => (
+              <div key={r.id} className="rounded-2xl bg-clay-surface p-3 text-sm" data-testid={`fleet-run-${r.id}`}>
+                <div className="font-semibold text-clay-ink">{r.vehicleReg}</div>
+                <div className="text-xs text-clay-muted">{r.agentName} · {r.delivered ? "delivered" : `ETA ${r.etaMin}m`} · to {r.facilityName}</div>
+              </div>
+            ))}
+            {shownCount === 0 && <p className="text-sm text-clay-muted">No vehicles carrying your batches right now.</p>}
           </div>
         </Card>
         <Card className="p-0 lg:col-span-3">
-          <LiveMap height={480} vehicles={shown.map((r) => ({ pos: r.pos, reg: r.vehicleReg, agent: r.agentName, eta: r.etaMin }))} stops={shown.flatMap((r) => r.stops)} routePath={shown[0]?.path} />
+          <LiveMap height={480}
+            vehicles={[...shownRoutes.map(({ route: r, stop }) => vehicleDetailFor(r, stop)), ...shownRuns.map(facilityRunVehicleDetail)]}
+            stops={shownRoutes.map(({ stop }) => stop)}
+            routePath={shownRoutes[0]?.route.path || shownRuns[0]?.path}
+          />
         </Card>
       </div>
     </div>

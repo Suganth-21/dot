@@ -20,25 +20,24 @@ async def _headers(client, role: str) -> dict:
 
 
 async def _walk_batch_to_scheduled(client, *, quantity_received: int = 50):
-    """Drives A17 all the way from REQUESTED through FORWARDED and
+    """Drives A17 all the way from auto-scheduled through FORWARDED and
     scheduled-for-fac_1 — the real state a batch is in right before a
-    facility run can legally be built for it."""
+    facility run can legally be built for it. No distributorId and no
+    manual `POST /api/routes` — return_service.create_return auto-assigns
+    the nearest agent (pick_nearest_agent) and builds the route itself the
+    instant the return exists."""
     retailer = await _headers(client, "RETAILER")
     ret_resp = await client.post(
-        "/api/returns", json={"batchId": A17, "quantity": 50, "distributorId": "dist_1", "reason": "EXPIRED"},
+        "/api/returns", json={"batchId": A17, "quantity": 50, "reason": "EXPIRED"},
         headers=retailer,
     )
     assert ret_resp.status_code == 200, ret_resp.text
     ret_id = ret_resp.json()["id"]
 
     distributor = await _headers(client, "DISTRIBUTOR")
-    route_resp = await client.post(
-        "/api/routes",
-        json={"distributorId": "dist_1", "returnIds": [ret_id], "agentId": "agent_1", "vehicleId": "veh_1", "manualOrder": True},
-        headers=distributor,
-    )
-    assert route_resp.status_code == 200, route_resp.text
-    route_id = route_resp.json()["id"]
+    ret_detail = await client.get(f"/api/returns/{ret_id}", headers=distributor)
+    route_id = ret_detail.json()["routeId"]
+    assert route_id, ret_detail.text
     await client.post(f"/api/routes/{route_id}/dispatch", headers=distributor)
 
     agent = await _headers(client, "PICKUP_AGENT")

@@ -68,7 +68,12 @@ export default function SplashIntro({ onFinish, color = "#3b82f6" }) {
             boxShadow: `0 0 30px ${color}cc`
           }}
           animate={{
-            backgroundColor: phase >= 1 ? "transparent" : color,
+            // Framer Motion can't tween a hex color to the literal keyword
+            // "transparent" (warns every splash play, i.e. every login) —
+            // `${color}00` is the same hex channel with alpha 0, so it's a
+            // real animatable color value and lands on the same fully
+            // transparent visual result.
+            backgroundColor: phase >= 1 ? `${color}00` : color,
             borderColor: phase >= 1 ? "#ffffff" : color,
             borderWidth: phase >= 1 ? "0.12em" : "0em",
             boxShadow: phase >= 1 ? "0 0 0px rgba(0,0,0,0)" : `0 0 30px ${color}cc`

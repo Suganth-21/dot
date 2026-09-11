@@ -33,10 +33,16 @@ export default function QrScanner({ onScan, demoCodes = [], height = 300, classN
   const [status, setStatus] = useState("starting"); // starting | scanning | denied | notfound | busy | error
   const [attempt, setAttempt] = useState(0);
   const idRef = useRef("qr-" + Math.random().toString(36).slice(2, 8));
+  // The camera keeps decoding the same code every frame (~10fps) while it's
+  // still in view — without this, one physical scan fired onScan (and every
+  // toast/mutation/sale it triggers) dozens of times. Only the first read of
+  // a given code per mount gets through.
+  const lastCodeRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
     setStatus("starting");
+    lastCodeRef.current = null;
     const el = document.getElementById(idRef.current);
     if (!el) return undefined;
     const scanner = new Html5Qrcode(idRef.current, { verbose: false });
@@ -49,7 +55,11 @@ export default function QrScanner({ onScan, demoCodes = [], height = 300, classN
         return scanner.start(
           camId,
           { fps: 10, qrbox: { width: 220, height: 220 } },
-          (decoded) => { onScan?.(decoded); },
+          (decoded) => {
+            if (decoded === lastCodeRef.current) return;
+            lastCodeRef.current = decoded;
+            onScan?.(decoded);
+          },
           () => {}
         ).then(() => {
           if (!mounted) {

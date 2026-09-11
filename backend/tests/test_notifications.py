@@ -29,8 +29,11 @@ async def test_create_return_produces_a_readable_notification(client, seeded):
     resp = await client.get("/api/notifications", headers=distributor)
     assert resp.status_code == 200
     body = resp.json()
-    assert any(n["title"] == "New return in inbox" for n in body)
-    assert all(n["read"] is False for n in body if n["title"] == "New return in inbox")
+    # Title changed with the auto-assignment flow: a distributor no longer
+    # gets an actionable "New return in inbox" prompt (there's nothing left
+    # for them to build) — just informed the pickup was already assigned.
+    assert any(n["title"] == "Pickup auto-assigned to your fleet" for n in body)
+    assert all(n["read"] is False for n in body if n["title"] == "Pickup auto-assigned to your fleet")
 
 
 @pytest.mark.asyncio

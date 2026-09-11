@@ -1,5 +1,5 @@
 import { apiGet, apiPost, apiPatch } from "../lib/api";
-import { refreshReturns, refreshBatches, refreshAlerts } from "./db";
+import { refreshReturns, refreshBatches, refreshAlerts, refreshRoutes } from "./db";
 
 export async function listReturns(filter = {}) {
   const params = new URLSearchParams();
@@ -14,15 +14,17 @@ export async function getReturn(id) {
   return apiGet(`/returns/${encodeURIComponent(id)}`);
 }
 
+// No distributorId — the backend auto-assigns the nearest available
+// pickup agent (and their distributor) by location the instant the
+// return is created (pickup_service.pick_nearest_agent).
 export async function createReturn(batchId, data, actor) {
   const created = await apiPost("/returns", {
     batchId,
     quantity: data.quantity,
-    distributorId: data.distributorId,
     reason: data.reason,
     photoHash: data.photoHash,
   });
-  await Promise.all([refreshReturns(), refreshBatches()]);
+  await Promise.all([refreshReturns(), refreshBatches(), refreshRoutes()]);
   return created;
 }
 

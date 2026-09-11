@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
@@ -13,6 +13,8 @@ import { useLive } from "../hooks/useDb";
 import { useAppMutation } from "../hooks/useAppMutation";
 import * as returnSvc from "../services/returnService";
 import * as pickupSvc from "../services/pickupService";
+import * as facilityRunSvc from "../services/facilityRunService";
+import * as batchSvc from "../services/batchService";
 import * as ref from "../services/referenceService";
 import * as analytics from "../services/analyticsService";
 
@@ -22,6 +24,7 @@ import LiveMap from "../components/maps/LiveMap";
 import PhotoCapture from "../components/scanner/PhotoCapture";
 import { SmoothLine, RoundedBars, FunnelCard, ChartCard } from "../components/charts";
 import { formatDate, cn } from "../lib/utils";
+import { activeStopOf, vehicleDetailFor, facilityRunVehicleDetail } from "../lib/fleetDetail";
 
 const useDid = () => useAuth((s) => s.user?.entityId) || "dist_1";
 
@@ -30,8 +33,11 @@ export function Dashboard() {
   const did = useDid();
   const nav = useNavigate();
   const { data: stats, isLoading } = useQuery({ queryKey: ["dist-stats", did], queryFn: () => analytics.distributorStats(did) });
-  const routes = useLive((s) => s.routes.filter((r) => r.distributorId === did && r.running));
+  // Kept through completion (not just while `running`) so a pickup that
+  // just finished doesn't vanish off the live map the instant it's done.
+  const routes = useLive((s) => s.routes.filter((r) => r.distributorId === did && r.status !== "planned"));
   const allRoutes = useLive((s) => s.routes.filter((r) => r.distributorId === did));
+  const facilityRuns = useLive((s) => s.facilityRuns.filter((r) => r.distributorId === did && r.status !== "planned"));
 
   return (
     <div>
@@ -63,9 +69,9 @@ export function Dashboard() {
         <Card className="p-0">
           <div className="p-5 pb-3"><SectionTitle>Live fleet</SectionTitle></div>
           <LiveMap height={320}
-            vehicles={routes.map((r) => ({ pos: r.pos, reg: r.vehicleReg, agent: r.agentName, eta: r.etaMin }))}
+            vehicles={[...routes.map((r) => vehicleDetailFor(r, activeStopOf(r))), ...facilityRuns.map(facilityRunVehicleDetail)]}
             stops={routes.flatMap((r) => r.stops)}
-            routePath={routes[0]?.path}
+            routePath={routes[0]?.path || facilityRuns[0]?.path}
           />
         </Card>
       </div>
@@ -301,6 +307,25 @@ export function PickupNew() {
   const legs = warehouse ? [{ lat: warehouse.lat, lng: warehouse.lng }, ...selStops.map((p) => ({ lat: p.lat, lng: p.lng }))] : [];
   const totalKm = legs.length > 1 ? Math.round(legs.slice(1).reduce((acc, p, i) => acc + Math.hypot(p.lat - legs[i].lat, p.lng - legs[i].lng) * 111, 0)) : 0;
 
+  // Idle fleet shown parked around the depot — like Uber showing nearby
+  // cars — so a distributor sees what's available before assigning one.
+  // A vehicle that's never been dispatched has no lat/lng yet (only the GPS
+  // simulator writes those, and only while running); it's shown resting at
+  // the warehouse, fanned out a little so markers don't stack exactly.
+  const idleVehicles = warehouse
+    ? (vehicles || []).filter((v) => v.status !== "active" && v.id !== veh).map((v, i, arr) => {
+        const angle = (i / Math.max(1, arr.length)) * Math.PI * 2;
+        const spread = 0.01; // ~1km fan-out radius
+        return {
+          pos: {
+            lat: (v.lat ?? warehouse.lat) + Math.sin(angle) * spread,
+            lng: (v.lng ?? warehouse.lng) + Math.cos(angle) * spread,
+          },
+          reg: v.regNo, color: "#8a8681",
+        };
+      })
+    : [];
+
   const reorder = (from, to) => {
     if (from == null || to == null || from === to) return;
     setSel((s) => { const a = [...s]; const [m] = a.splice(from, 1); a.splice(to, 0, m); return a; });
@@ -349,6 +374,7 @@ export function PickupNew() {
             <div className="p-5 pb-3"><SectionTitle>Route preview {selStops.length > 0 && <span className="text-clay-muted">· {selStops.length} stops · ~{totalKm} km · ~{selStops.length * 12} min</span>}</SectionTitle></div>
             <LiveMap height={280}
               markers={selStops.map((p, i) => ({ lat: p.lat, lng: p.lng, label: `${i + 1}. ${p.name}` }))}
+              vehicles={idleVehicles}
               routePath={legs.length > 1 ? legs : null}
               center={warehouse ? [warehouse.lat, warehouse.lng] : undefined} />
           </Card>
@@ -426,14 +452,132 @@ export function RouteView() {
   );
 }
 
+// ============================ FACILITY RUNS (distributor -> facility) ========
+export function FacilityRuns() {
+  const did = useDid();
+  const nav = useNavigate();
+  const runs = useLive((s) => s.facilityRuns.filter((r) => r.distributorId === did));
+  return (
+    <div>
+      <PageHeader title="Facility runs" subtitle="Delivering confirmed batches to destruction facilities" icon={Building2}
+        actions={<Button onClick={() => nav("/distributor/facility-runs/new")} data-testid="new-facility-run-btn"><Building2 className="h-4 w-4" /> New run</Button>} />
+      {runs.length === 0 ? (
+        <EmptyState title="No facility runs yet" subtitle="Build one once a manufacturer has scheduled a facility for a batch you hold." icon={Building2} />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {runs.map((r) => (
+            <Card key={r.id} data-testid={`facility-run-${r.id}`}>
+              <div className="flex items-center justify-between">
+                <div className="text-lg font-bold text-clay-ink">{r.vehicleReg}</div>
+                <StatusPill status={r.delivered ? "CONFIRMED" : r.running ? "active" : "SCHEDULED"} />
+              </div>
+              <div className="mt-1 text-sm text-clay-muted">{r.agentName} · to {r.facilityName} · {r.delivered ? "delivered" : `ETA ${r.etaMin}m`}</div>
+              <div className="mt-2 text-xs text-clay-muted">{r.batches.map((b) => b.drugName).join(", ")}</div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================ FACILITY RUN NEW (builder) ======================
+export function FacilityRunNew() {
+  const did = useDid();
+  const nav = useNavigate();
+  const { data: batches } = useQuery({ queryKey: ["batches"], queryFn: () => batchSvc.listBatches() });
+  const { data: facilities } = useQuery({ queryKey: ["facilities"], queryFn: () => ref.getFacilities() });
+  const { data: agents } = useQuery({ queryKey: ["agents", did], queryFn: () => ref.getAgents(did) });
+  const { data: vehicles } = useQuery({ queryKey: ["vehicles", did], queryFn: () => ref.getVehicles(did) });
+  const warehouse = useLive((s) => s.distributors.find((d) => d.id === did));
+
+  const [facility, setFacility] = useState("");
+  const [sel, setSel] = useState([]);
+  const [agent, setAgent] = useState("");
+  const [veh, setVeh] = useState("");
+
+  // Only a batch this distributor physically holds, and only once its
+  // manufacturer has actually scheduled a facility for it — matches
+  // facility_run_service.create_run's own eligibility check exactly, so
+  // nothing offered here can be rejected server-side.
+  const eligible = useMemo(
+    () => (batches || []).filter((b) => b.holder?.type === "DISTRIBUTOR" && b.holder?.id === did && b.scheduledFacility),
+    [batches, did],
+  );
+  const facilitiesWithEligible = useMemo(
+    () => [...new Map(eligible.map((b) => [b.scheduledFacility.id, b.scheduledFacility])).values()],
+    [eligible],
+  );
+  const forThisFacility = eligible.filter((b) => b.scheduledFacility.id === facility);
+
+  // Same reasoning as the pharmacy return-distributor default and the
+  // pickup-route builder: default every picker to the one real option a
+  // demo login can actually act on, so nothing gets silently orphaned.
+  React.useEffect(() => { if (!facility && facilitiesWithEligible.length) setFacility(facilitiesWithEligible[0].id); }, [facilitiesWithEligible, facility]);
+  React.useEffect(() => { if (!agent && agents && agents.length) setAgent(agents[0].id); }, [agents, agent]);
+  React.useEffect(() => { if (!veh && vehicles && vehicles.length) setVeh(vehicles[0].id); }, [vehicles, veh]);
+
+  const facilityObj = (facilities || []).find((f) => f.id === facility);
+  const totalKm = warehouse && facilityObj ? Math.round(Math.hypot(facilityObj.lat - warehouse.lat, facilityObj.lng - warehouse.lng) * 111) : 0;
+
+  const mut = useAppMutation(
+    () => facilityRunSvc.createFacilityRun({ distributorId: did, batchIds: sel, facilityId: facility, agentId: agent, vehicleId: veh }),
+    { onSuccess: async (run) => { await facilityRunSvc.dispatchFacilityRun(run.id); toast.success("Facility run dispatched — vehicle rolling"); nav("/distributor/facility-runs"); } },
+  );
+
+  if (facilitiesWithEligible.length === 0) {
+    return (
+      <div>
+        <PageHeader title="Build a facility run" subtitle="Deliver confirmed batches to a destruction facility" icon={Building2} />
+        <EmptyState title="Nothing ready yet" subtitle="A batch shows up here once its manufacturer has scheduled a destruction facility for it." icon={Building2} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-3xl">
+      <PageHeader title="Build a facility run" subtitle="Deliver confirmed batches to a destruction facility" icon={Building2} />
+      <Card className="mb-4">
+        <Label>Facility</Label>
+        <Select value={facility} onChange={(e) => { setFacility(e.target.value); setSel([]); }} data-testid="facility-run-facility">
+          {facilitiesWithEligible.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </Select>
+        {facilityObj && <p className="mt-2 text-xs text-clay-muted">~{totalKm} km from your warehouse</p>}
+      </Card>
+      <Card className="mb-4">
+        <SectionTitle>Batches ready for this facility</SectionTitle>
+        {forThisFacility.length === 0 ? <p className="rounded-2xl bg-clay-surface px-4 py-6 text-center text-sm text-clay-muted">No eligible batches for this facility.</p> : (
+          <div className="space-y-2">
+            {forThisFacility.map((b) => (
+              <label key={b.id} className={cn("flex cursor-pointer items-center gap-3 rounded-2xl p-3 ring-1 transition-colors", sel.includes(b.id) ? "bg-accent-soft ring-accent/30" : "bg-clay-surface ring-clay-line/60")} data-testid={`facility-run-batch-${b.id}`}>
+                <input type="checkbox" checked={sel.includes(b.id)} onChange={(e) => setSel((s) => e.target.checked ? [...s, b.id] : s.filter((x) => x !== b.id))} />
+                <div className="flex-1"><div className="text-sm font-semibold text-clay-ink">{b.drugName}</div><div className="font-mono text-xs text-clay-muted">{b.id}</div></div>
+                <Badge tone="gray">{b.quantity}u</Badge>
+              </label>
+            ))}
+          </div>
+        )}
+      </Card>
+      <Card className="space-y-3">
+        <div><Label>Assign pickup agent</Label><Select value={agent} onChange={(e) => setAgent(e.target.value)} data-testid="facility-run-agent"><option value="">Choose…</option>{(agents || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</Select></div>
+        <div><Label>Assign vehicle</Label><Select value={veh} onChange={(e) => setVeh(e.target.value)} data-testid="facility-run-vehicle"><option value="">Choose…</option>{(vehicles || []).map((v) => <option key={v.id} value={v.id}>{v.regNo}</option>)}</Select></div>
+        <Button className="w-full" disabled={sel.length === 0 || !agent || !veh || mut.isPending} onClick={() => mut.mutate()} data-testid="dispatch-facility-run"><Send className="h-4 w-4" /> Dispatch run</Button>
+      </Card>
+    </div>
+  );
+}
+
 // ============================ FLEET ==========================================
 export function Fleet() {
   const did = useDid();
   const vehicles = useLive((s) => s.vehicles.filter((v) => v.distributorId === did));
   const agents = useLive((s) => s.agents.filter((a) => a.distributorId === did));
-  const routes = useLive((s) => s.routes.filter((r) => r.distributorId === did && r.running));
+  const routes = useLive((s) => s.routes.filter((r) => r.distributorId === did && r.status !== "planned"));
+  const facilityRuns = useLive((s) => s.facilityRuns.filter((r) => r.distributorId === did && r.status !== "planned"));
   const [selVeh, setSelVeh] = useState(null);
   const activeRoute = routes.find((r) => r.vehicleId === selVeh);
+  const activeRun = !activeRoute ? facilityRuns.find((r) => r.vehicleId === selVeh) : null;
+  const activeLeg = activeRoute || activeRun;
 
   return (
     <div>
@@ -455,9 +599,13 @@ export function Fleet() {
         </Card>
         <Card className="p-0">
           <div className="p-5 pb-3"><SectionTitle>{selVeh ? "Live location" : "Select a vehicle"}</SectionTitle></div>
-          <LiveMap height={420} follow={!!activeRoute} center={activeRoute ? [activeRoute.pos.lat, activeRoute.pos.lng] : undefined}
-            vehicles={activeRoute ? [{ pos: activeRoute.pos, reg: activeRoute.vehicleReg, agent: activeRoute.agentName, eta: activeRoute.etaMin }] : routes.map((r) => ({ pos: r.pos, reg: r.vehicleReg }))}
-            stops={activeRoute?.stops || []} routePath={activeRoute?.path} />
+          <LiveMap height={420} follow={!!activeLeg} center={activeLeg ? [activeLeg.pos.lat, activeLeg.pos.lng] : undefined}
+            vehicles={
+              activeRoute ? [vehicleDetailFor(activeRoute, activeStopOf(activeRoute))]
+              : activeRun ? [facilityRunVehicleDetail(activeRun)]
+              : [...routes.map((r) => vehicleDetailFor(r, activeStopOf(r))), ...facilityRuns.map(facilityRunVehicleDetail)]
+            }
+            stops={activeRoute?.stops || []} routePath={activeLeg?.path} />
         </Card>
       </div>
     </div>

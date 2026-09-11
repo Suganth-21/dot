@@ -1,11 +1,17 @@
 import React, { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Play, MapPin, Phone, CheckCircle2, Camera, ArrowRight, Navigation, History as HistoryIcon } from "lucide-react";
+import { Play, MapPin, Phone, CheckCircle2, XCircle, ArrowRight, Navigation, History as HistoryIcon } from "lucide-react";
 import { useAuth } from "../store/authStore";
 import { useLive } from "../hooks/useDb";
 import * as pickupSvc from "../services/pickupService";
+import * as facilityRunSvc from "../services/facilityRunService";
+import * as returnSvc from "../services/returnService";
+import { decodeBatchQr } from "../lib/qrPayload";
+import QrScanner from "../components/scanner/QrScanner";
+import LiveMap from "../components/maps/LiveMap";
 import { Card, Button, Input, Label, Badge } from "../components/ui";
 import { StatusPill, EmptyState, SectionTitle } from "../components/common";
 import { cn } from "../lib/utils";
@@ -17,44 +23,83 @@ export function Today() {
   const nav = useNavigate();
   const route = useLive((s) => s.routes.find((r) => r.agentId === aid && r.status !== "completed") || s.routes.find((r) => r.agentId === aid));
   const routeIndex = useLive((s) => s.routes.findIndex((r) => r.id === route?.id) + 1);
+  // The second leg of the reverse chain — distributor -> facility — lands
+  // on the same agent's Today screen alongside their pharmacy pickup run,
+  // not on a separate page: to this agent it's just another job today.
+  const facilityRuns = useLive((s) => s.facilityRuns.filter((r) => r.agentId === aid));
 
-  if (!route) return <EmptyState title="No route assigned" subtitle="Check back when your distributor assigns a route." icon={Navigation} />;
+  if (!route && facilityRuns.length === 0) {
+    return <EmptyState title="No route assigned" subtitle="Check back when your distributor assigns a route." icon={Navigation} />;
+  }
 
-  const done = route.stops.filter((s) => s.status === "DONE").length;
-  const progress = Math.round((done / route.stops.length) * 100);
+  const done = route ? route.stops.filter((s) => s.status === "DONE").length : 0;
+  const progress = route ? Math.round((done / route.stops.length) * 100) : 0;
 
   const start = async () => { await pickupSvc.dispatchRoute(route.id); toast.success("Route started — GPS emitting"); };
+  const startRun = async (runId) => { await facilityRunSvc.dispatchFacilityRun(runId); toast.success("Facility run started — GPS emitting"); };
+  const deliverRun = async (runId) => { await facilityRunSvc.deliverFacilityRun(runId); toast.success("Delivered — batch handed to the facility"); };
 
   return (
     <div>
       <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-clay-muted">Today</div>
-      <h1 className="text-2xl font-extrabold text-clay-ink">Route {routeIndex} — {route.stops.length} stops</h1>
-      <div className="mt-1 text-sm text-clay-muted">{route.vehicleReg}</div>
 
-      {!route.running && route.status !== "completed" ? (
-        <Button size="lg" className="mt-5 h-16 w-full text-lg" onClick={start} data-testid="start-route"><Play className="h-6 w-6" /> Start Route</Button>
-      ) : (
-        <Card tint="mint" className="mt-5">
-          <div className="flex items-center justify-between text-sm font-semibold text-[#1f8a6a]"><span>{route.status === "completed" ? "Route complete" : "Route in progress"}</span><span>{progress}%</span></div>
-          <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-white/60"><motion.div className="h-full rounded-full bg-mint" animate={{ width: `${progress}%` }} /></div>
-        </Card>
+      {route && (
+        <>
+          <h1 className="text-2xl font-extrabold text-clay-ink">Route {routeIndex} — {route.stops.length} stops</h1>
+          <div className="mt-1 text-sm text-clay-muted">{route.vehicleReg}</div>
+
+          {!route.running && route.status !== "completed" ? (
+            <Button size="lg" className="mt-5 h-16 w-full text-lg" onClick={start} data-testid="start-route"><Play className="h-6 w-6" /> Start Route</Button>
+          ) : (
+            <Card tint="mint" className="mt-5">
+              <div className="flex items-center justify-between text-sm font-semibold text-[#1f8a6a]"><span>{route.status === "completed" ? "Route complete" : "Route in progress"}</span><span>{progress}%</span></div>
+              <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-white/60"><motion.div className="h-full rounded-full bg-mint" animate={{ width: `${progress}%` }} /></div>
+            </Card>
+          )}
+
+          <div className="mt-5 space-y-2">
+            {route.stops.map((s, i) => (
+              <button key={i} onClick={() => nav(`/agent/stop/${route.id}__${i}`)} data-testid={`stop-card-${i}`}
+                className={cn("flex w-full items-center gap-3 rounded-clay p-4 text-left ring-1 transition-all",
+                  s.status === "CURRENT" || s.status === "ARRIVED" ? "bg-accent-soft ring-accent/30" : "bg-clay-card ring-clay-line/60")}>
+                <span className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white", s.status === "DONE" ? "bg-mint" : s.status === "CURRENT" || s.status === "ARRIVED" ? "bg-accent" : "bg-clay-muted")}>{s.order}</span>
+                <div className="flex-1">
+                  <div className="text-sm font-bold text-clay-ink">{s.pharmacyName}</div>
+                  <div className="text-xs text-clay-muted">{s.address}</div>
+                  <div className="mt-1 text-xs text-accent-ink">{s.expectedBatches} batch(es) expected</div>
+                </div>
+                {s.status === "DONE" ? <CheckCircle2 className="h-5 w-5 text-mint" /> : <ArrowRight className="h-5 w-5 text-clay-muted" />}
+              </button>
+            ))}
+          </div>
+        </>
       )}
 
-      <div className="mt-5 space-y-2">
-        {route.stops.map((s, i) => (
-          <button key={i} onClick={() => nav(`/agent/stop/${route.id}__${i}`)} data-testid={`stop-card-${i}`}
-            className={cn("flex w-full items-center gap-3 rounded-clay p-4 text-left ring-1 transition-all",
-              s.status === "CURRENT" || s.status === "ARRIVED" ? "bg-accent-soft ring-accent/30" : "bg-clay-card ring-clay-line/60")}>
-            <span className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white", s.status === "DONE" ? "bg-mint" : s.status === "CURRENT" || s.status === "ARRIVED" ? "bg-accent" : "bg-clay-muted")}>{s.order}</span>
-            <div className="flex-1">
-              <div className="text-sm font-bold text-clay-ink">{s.pharmacyName}</div>
-              <div className="text-xs text-clay-muted">{s.address}</div>
-              <div className="mt-1 text-xs text-accent-ink">{s.expectedBatches} batch(es) expected</div>
-            </div>
-            {s.status === "DONE" ? <CheckCircle2 className="h-5 w-5 text-mint" /> : <ArrowRight className="h-5 w-5 text-clay-muted" />}
-          </button>
-        ))}
-      </div>
+      {facilityRuns.length > 0 && (
+        <div className={route ? "mt-8" : ""}>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-clay-muted">Facility runs</div>
+          <div className="space-y-2">
+            {facilityRuns.map((r) => (
+              <div key={r.id} className="rounded-clay bg-clay-card p-4 ring-1 ring-clay-line/60" data-testid={`facility-run-card-${r.id}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex-1">
+                    <div className="text-sm font-bold text-clay-ink">To {r.facilityName}</div>
+                    <div className="text-xs text-clay-muted">{r.batches.map((b) => b.drugName).join(", ")} · {r.vehicleReg}</div>
+                  </div>
+                  <StatusPill status={r.delivered ? "CONFIRMED" : r.running ? "active" : "SCHEDULED"} />
+                </div>
+                {r.delivered ? (
+                  <div className="mt-3 flex items-center gap-2 text-sm font-semibold text-[#1f8a6a]"><CheckCircle2 className="h-4 w-4" /> Delivered</div>
+                ) : !r.running ? (
+                  <Button className="mt-3 w-full" onClick={() => startRun(r.id)} data-testid={`start-facility-run-${r.id}`}><Play className="h-4 w-4" /> Start run</Button>
+                ) : (
+                  <Button className="mt-3 w-full" onClick={() => deliverRun(r.id)} data-testid={`deliver-facility-run-${r.id}`}><MapPin className="h-4 w-4" /> Arrived — deliver</Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -66,13 +111,42 @@ export function Stop() {
   const idx = Number(idxStr);
   const route = useLive((s) => s.routes.find((r) => r.id === routeId));
   const [counted, setCounted] = useState("");
-  const [scanned, setScanned] = useState(false);
+  const [scanState, setScanState] = useState("idle"); // idle | matched | mismatch
+  const [mismatchCode, setMismatchCode] = useState("");
 
-  if (!route || !route.stops[idx]) return <EmptyState title="Stop not found" icon={MapPin} />;
-  const stop = route.stops[idx];
+  const stop = route?.stops?.[idx];
+  // Stops only carry a returnId (ARCHITECTURE.md's RouteStopOut) — the real
+  // expected drug/batch/quantity comes from the return itself, fetched here
+  // instead of the hardcoded placeholder this page used to show.
+  const { data: ret } = useQuery({
+    queryKey: ["return", stop?.returnId],
+    queryFn: () => returnSvc.getReturn(stop.returnId),
+    enabled: !!stop?.returnId,
+  });
+
+  if (!route || !stop) return <EmptyState title="Stop not found" icon={MapPin} />;
 
   const arrive = async () => { await pickupSvc.agentArrive(routeId, idx); toast.success("Arrival broadcast to distributor"); };
+
+  // Approves only if the scanned label is the exact batch this stop expects
+  // — anything else (another pharmacy's batch, a mistyped/reused label) is
+  // rejected as the wrong product rather than silently accepted.
+  const onScan = (raw) => {
+    const { batchId } = decodeBatchQr(raw);
+    if (!ret) { toast.error("Still loading the expected batch — try again in a second"); return; }
+    if (batchId !== ret.batchId) {
+      setScanState("mismatch");
+      setMismatchCode(batchId);
+      toast.error(`Wrong product — scanned ${batchId}, expected ${ret.batchId}`);
+      return;
+    }
+    setScanState("matched");
+    setCounted(String(ret.quantityClaimed)); // pre-filled from the claim, still editable if the physical count differs
+    toast.success("Batch verified ✓", { duration: 1500 });
+  };
+
   const complete = async () => {
+    if (scanState !== "matched") { toast.error("Scan the batch QR to verify it first"); return; }
     if (!counted) { toast.error("Enter counted quantity"); return; }
     await pickupSvc.agentPickup(routeId, idx, Number(counted));
     toast.success("Pickup complete");
@@ -88,24 +162,44 @@ export function Stop() {
         <Button variant="soft" size="sm" className="mt-3" onClick={() => toast.info("Calling pharmacy…")} data-testid="call-pharmacy"><Phone className="h-4 w-4" /> Call pharmacy</Button>
       </Card>
 
+      <Card className="mt-4 p-0">
+        <LiveMap height={220} follow center={[route.pos.lat, route.pos.lng]}
+          vehicles={[{ pos: route.pos, reg: route.vehicleReg, eta: route.etaMin }]}
+          stops={[stop]}
+          routePath={route.path}
+        />
+      </Card>
+
       <div className="mt-4">
         <Button className="h-14 w-full" variant={stop.status === "ARRIVED" || stop.status === "DONE" ? "success" : "primary"} onClick={arrive} disabled={stop.status === "ARRIVED" || stop.status === "DONE"} data-testid="arrived-btn">
-          <MapPin className="h-5 w-5" /> {stop.status === "ARRIVED" || stop.status === "DONE" ? "Arrival broadcast ✓" : "I have arrived"}
+          <MapPin className="h-5 w-5" /> {stop.status === "ARRIVED" || stop.status === "DONE" ? "Destination reached ✓" : "Destination reached"}
         </Button>
       </div>
 
       <Card className="mt-4">
-        <SectionTitle>Expected batches</SectionTitle>
-        <div className="mb-4 rounded-2xl bg-clay-surface p-3 text-sm"><div className="font-semibold text-clay-ink">Doxorubicin 50mg</div><div className="text-xs text-clay-muted">Claimed 50 units</div></div>
-        <Label>Scan / photograph</Label>
-        <button onClick={() => { setScanned(true); toast.success("Batch scanned"); }} className={cn("mb-3 flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed py-6 text-sm", scanned ? "border-mint bg-mint-soft text-[#1f8a6a]" : "border-clay-line text-clay-muted")} data-testid="agent-scan">
-          <Camera className="h-5 w-5" /> {scanned ? "Scanned ✓" : "Scan QR / photograph"}
-        </button>
+        <SectionTitle>Expected batch</SectionTitle>
+        <div className="mb-4 rounded-2xl bg-clay-surface p-3 text-sm">
+          <div className="font-semibold text-clay-ink">{ret?.drugName || "Loading…"}</div>
+          <div className="text-xs text-clay-muted">Claimed {ret?.quantityClaimed ?? "—"} units{ret ? ` · ${ret.batchId}` : ""}</div>
+        </div>
+        <Label>Scan batch QR</Label>
+        {scanState === "matched" ? (
+          <div className="mb-3 flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-mint bg-mint-soft py-6 text-sm font-semibold text-[#1f8a6a]" data-testid="agent-scan-approved">
+            <CheckCircle2 className="h-5 w-5" /> Approved — matches {ret?.batchId}
+          </div>
+        ) : (
+          <QrScanner onScan={onScan} height={220} demoCodes={ret ? [{ code: ret.batchId, label: ret.drugName }] : []} />
+        )}
+        {scanState === "mismatch" && (
+          <p className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-rose2" data-testid="agent-scan-mismatch">
+            <XCircle className="h-4 w-4" /> Wrong product — {mismatchCode} isn't this pickup's batch
+          </p>
+        )}
         <Label>Counted quantity</Label>
         <Input type="number" value={counted} onChange={(e) => setCounted(e.target.value)} placeholder="e.g. 45" data-testid="counted-qty" />
       </Card>
 
-      <Button className="mt-4 h-14 w-full" onClick={complete} data-testid="pickup-complete">Pickup complete — go to next stop <ArrowRight className="h-5 w-5" /></Button>
+      <Button className="mt-4 h-14 w-full" onClick={complete} disabled={scanState !== "matched"} data-testid="pickup-complete">Pickup complete — go to next stop <ArrowRight className="h-5 w-5" /></Button>
     </div>
   );
 }
